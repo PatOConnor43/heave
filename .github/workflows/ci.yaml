@@ -1,0 +1,63 @@
+# The "Normal" CI for tests and linters and whatnot
+name: Rust CI
+
+# Ci should be run on...
+on:
+  # Every pull request (will need approval for new contributors)
+  pull_request:
+  # Every push to...
+  push:
+    branches:
+      # The main branch
+      - main
+
+  # We want all these checks to fail if they spit out warnings
+env:
+  RUSTFLAGS: -Dwarnings
+
+jobs:
+  # Check that rustfmt is a no-op
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  # Make sure the docs build without warnings
+  docs:
+   runs-on: ubuntu-latest
+   env:
+     RUSTDOCFLAGS: -Dwarnings
+   steps:
+     - uses: actions/checkout@master
+     - uses: dtolnay/rust-toolchain@master
+       with:
+         toolchain: stable
+         components: rust-docs
+     - uses: swatinem/rust-cache@v2
+     - run: cargo doc --workspace --no-deps
+  test:
+    runs-on: ${{ matrix.os }}
+    env:
+      # runtest the installer scripts
+      RUIN_MY_COMPUTER_WITH_INSTALLERS: true
+    strategy:
+      # Test the cross-product of these platforms+toolchains
+      matrix:
+        os: [ubuntu-latest, macos-14]
+        rust: [stable]
+    steps:
+      # Setup tools
+      - uses: actions/checkout@master
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+      - uses: swatinem/rust-cache@v2
+      # Run the tests/doctests (default features)
+      - run: cargo test
+        env:
+          PWD: ${{ env.GITHUB_WORKSPACE }}

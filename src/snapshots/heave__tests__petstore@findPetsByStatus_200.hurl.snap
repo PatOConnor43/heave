@@ -1,0 +1,17 @@
+---
+source: src/main.rs
+input_file: src/snapshots/petstore/findPetsByStatus_200.hurl
+---
+GET {{ baseurl }}/pet/findByStatus
+Authorization: Bearer {{ authorization }}
+Prefer: code=200
+
+[QueryStringParams]
+status: 
+
+HTTP 200
+
+[Asserts]
+jsonpath "$" isCollection
+
+
