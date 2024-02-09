@@ -1,3 +1,10 @@
+# Version 0.3.0 (2024-02-09)
+
+New features:
+- Slight improvement of documentation. This will be helpful when I actually write a decent README.
+- Fixed panic
+  - The request_body generation assumed that Strings, Numbers, Integers, and Booleans would always have a name associated with them. This isn't the case when you have an Array of these types though.
+
 # Version 0.2.0 (2024-02-8)
 
 New features:
