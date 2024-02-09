@@ -31,7 +31,6 @@ pub struct Output {
     pub asserts: Vec<String>,
     pub request_body_parameter: String,
 }
-
 fn main() -> Result<(), Box<dyn Error>> {
     let cli = Args::parse();
     let output_directory = cli.output;
@@ -42,9 +41,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let content = std::fs::read_to_string(&cli.path)?;
 
-    let mut outputs: Vec<Output> = vec![];
-
     let openapi: OpenAPI = serde_yaml::from_str(&content).expect("Could not deserialize input");
+    generate(openapi, output_directory)
+}
+
+fn generate(openapi: openapiv3::OpenAPI, output_directory: PathBuf) -> Result<(), Box<dyn Error>> {
+    let mut outputs: Vec<Output> = vec![];
     for (path, method, operation) in openapi.operations() {
         let name = operation
             .operation_id
@@ -495,4 +497,32 @@ fn generate_request_body_from_schema(
         println!("Only explicit types for responses are supported. Using AnyOf, Allof, etc. is not supported.");
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{error::Error, path::PathBuf, str::FromStr};
+
+    use insta::{assert_snapshot, glob};
+    use openapiv3::OpenAPI;
+
+    use crate::generate;
+
+    #[test]
+    fn petstore() -> Result<(), Box<dyn Error>> {
+        let content = std::fs::read_to_string("src/snapshots/petstore/petstore.yaml")?;
+        let openapi: OpenAPI = serde_yaml::from_str(&content).expect("Could not deserialize input");
+        let output_directory = PathBuf::from_str("src/snapshots/petstore")?;
+        generate(openapi, output_directory)?;
+        let mut settings = insta::Settings::clone_current();
+        settings.set_omit_expression(true);
+        settings.bind(|| {
+            glob!("snapshots/petstore/*.hurl", |path| {
+                let input = std::fs::read_to_string(path).unwrap();
+                assert_snapshot!(input);
+            });
+        });
+
+        Ok(())
+    }
 }
