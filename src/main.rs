@@ -23,6 +23,7 @@ struct Output {
     header_parameters: Vec<String>,
     query_parameters: Vec<String>,
     asserts: Vec<String>,
+    request_body_parameter: String,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -48,6 +49,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             .unwrap_or_else(|| format!("{}_{}", method, path.replace("/", "_")));
         let mut query_parameters: Vec<String> = vec![];
         let mut header_parameters: Vec<String> = vec![];
+        let mut request_body_parameter: Option<String> = None;
         for parameter in operation.parameters.iter() {
             match parameter {
                 openapiv3::ReferenceOr::Reference { reference } => {
@@ -90,6 +92,31 @@ fn main() -> Result<(), Box<dyn Error>> {
                     _ => {}
                 },
             }
+        }
+
+        if let Some(request_body) = &operation.request_body {
+            let request_body = resolve_request_body(&openapi, &request_body);
+            if request_body.is_none() {
+                break;
+            }
+            let request_body = request_body.unwrap();
+            let content = &request_body.content;
+            let media_type = content.get("application/json");
+            if media_type.is_none() {
+                break;
+            }
+            let media_type = media_type.unwrap();
+            let schema = &media_type.schema;
+            if schema.is_none() {
+                break;
+            }
+            let schema = schema.as_ref().unwrap();
+            let schema = resolve_schema(&openapi, &schema);
+            if schema.is_none() {
+                break;
+            }
+            let schema = schema.unwrap();
+            request_body_parameter = generate_request_body_from_schema(&openapi, &schema, None, 0);
         }
 
         for (status_code, response) in operation.responses.responses.iter() {
@@ -163,6 +190,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                         header_parameters: header_parameters.clone(),
                         query_parameters: query_parameters.clone(),
                         asserts: asserts.clone(),
+                        request_body_parameter: request_body_parameter
+                            .clone()
+                            .unwrap_or("".to_string()),
                     };
                     outputs.push(output)
                 }
@@ -181,7 +211,7 @@ Prefer: code={{ expected_status_code }}
 {% endfor %}{% if query_parameters %}
 [QueryStringParams]
 {% for query in query_parameters %}{{ query }}: 
-{% endfor %}{% endif %}
+{% endfor %}{% endif %}{{ request_body_parameter }}
 HTTP {{ expected_status_code }}
 {% if asserts %}
 [Asserts]
@@ -202,6 +232,7 @@ HTTP {{ expected_status_code }}
                 header_parameters => output.header_parameters,
                 query_parameters => output.query_parameters,
                 asserts => output.asserts,
+                request_body_parameter => output.request_body_parameter,
             })
             .unwrap();
         let mut file_path = output_directory.clone();
@@ -325,4 +356,136 @@ fn resolve_schema<'a>(
             Some(schema)
         }
     }
+}
+
+fn resolve_request_body<'a>(
+    openapi: &'a openapiv3::OpenAPI,
+    request_body: &'a openapiv3::ReferenceOr<openapiv3::RequestBody>,
+) -> Option<&'a openapiv3::RequestBody> {
+    match request_body {
+        ReferenceOr::Item(item) => {
+            return Some(item);
+        }
+        ReferenceOr::Reference { reference } => {
+            let request_body_name = reference.split("#/components/requestBodies/").nth(1);
+            if request_body_name.is_none() {
+                return None;
+            }
+            let request_body_name = request_body_name.unwrap();
+            let components = &openapi.components;
+            if components.is_none() {
+                return None;
+            }
+            let found_request_body = components
+                .as_ref()
+                .unwrap()
+                .request_bodies
+                .get(request_body_name);
+            if found_request_body.is_none() {
+                return None;
+            }
+            let found_request_body = found_request_body.unwrap();
+            if found_request_body.as_item().is_none() {
+                return None;
+            }
+            let request_body = found_request_body.as_item().unwrap();
+            Some(request_body)
+        }
+    }
+}
+
+fn generate_request_body_from_schema(
+    openapi: &openapiv3::OpenAPI,
+    schema: &openapiv3::Schema,
+    name: Option<String>,
+    level: usize,
+) -> Option<String> {
+    if let openapiv3::SchemaKind::Type(schema_type) = &schema.schema_kind {
+        return match schema_type {
+            openapiv3::Type::String(_) => {
+                Some(format!("{}\"{}\": \"\"", " ".repeat(level), name.unwrap()))
+            }
+            openapiv3::Type::Number(_) => {
+                Some(format!("{}\"{}\": 0", " ".repeat(level), name.unwrap()))
+            }
+            openapiv3::Type::Integer(_) => {
+                Some(format!("{}\"{}\": 0", " ".repeat(level), name.unwrap()))
+            }
+            openapiv3::Type::Object(ob) => {
+                let properties = &ob.properties;
+                let mut child_request_bodies: Vec<Option<String>> = vec![];
+                for (name, prop) in properties.iter() {
+                    let inner = resolve_schema_box(&openapi, &prop);
+                    if inner.is_none() {
+                        return None;
+                    }
+                    let inner = inner.unwrap();
+                    let request_body = generate_request_body_from_schema(
+                        &openapi,
+                        &inner,
+                        Some(name.to_string()),
+                        level + 2,
+                    );
+                    child_request_bodies.push(request_body);
+                }
+                let stringified_body = child_request_bodies
+                    .into_iter()
+                    .filter_map(|body| body)
+                    .collect::<Vec<String>>()
+                    .join(",\n");
+                return match name {
+                    Some(name) => Some(format!(
+                        "{}\"{}\": {{{}}}",
+                        " ".repeat(level),
+                        name,
+                        stringified_body
+                    )),
+                    None => Some(format!(
+                        "{}{{\n{}\n{}}}",
+                        " ".repeat(level),
+                        stringified_body,
+                        " ".repeat(level)
+                    )),
+                };
+            }
+            openapiv3::Type::Array(array) => {
+                let items = &array.items;
+                if items.is_none() {
+                    return None;
+                }
+                let items = items.as_ref().unwrap();
+                let inner = resolve_schema_box(&openapi, &items);
+                if inner.is_none() {
+                    return None;
+                }
+                let inner = inner.unwrap();
+                let child_request_body =
+                    generate_request_body_from_schema(&openapi, &inner, None, level + 2);
+                if child_request_body.is_none() {
+                    return None;
+                }
+                let child_request_body = child_request_body.unwrap();
+                match name {
+                    Some(name) => Some(format!(
+                        "{}\"{}\": [{}]",
+                        " ".repeat(level),
+                        name,
+                        child_request_body
+                    )),
+                    None => Some(format!(
+                        "{}[\n{}\n{}]",
+                        " ".repeat(level),
+                        child_request_body,
+                        " ".repeat(level)
+                    )),
+                }
+            }
+            openapiv3::Type::Boolean(_) => {
+                Some(format!("{}\"{}\": true", " ".repeat(level), name.unwrap()))
+            }
+        };
+    } else {
+        println!("Only explicit types for responses are supported. Using AnyOf, Allof, etc. is not supported.");
+    }
+    None
 }
