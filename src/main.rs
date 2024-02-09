@@ -8,10 +8,12 @@ use openapiv3::{OpenAPI, ReferenceOr};
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Path to OAS file
+    #[arg(
+        help = "The path to an OpenAPI spec. This spec must not contain references to other files."
+    )]
     path: PathBuf,
 
-    /// The directory where the files should be created
+    #[arg(help = "The directory where generated hurl files will be created.")]
     output: PathBuf,
 }
 
