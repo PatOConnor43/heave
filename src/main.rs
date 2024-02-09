@@ -17,15 +17,19 @@ struct Args {
     output: PathBuf,
 }
 
-struct Output {
-    expected_status_code: u16,
-    name: String,
-    path: String,
-    method: String,
-    header_parameters: Vec<String>,
-    query_parameters: Vec<String>,
-    asserts: Vec<String>,
-    request_body_parameter: String,
+/// The struct used to capture output variables.
+///
+/// Each field defined in this struct will be available to the template. The template uses the
+/// minijinja syntax.
+pub struct Output {
+    pub expected_status_code: u16,
+    pub name: String,
+    pub path: String,
+    pub method: String,
+    pub header_parameters: Vec<String>,
+    pub query_parameters: Vec<String>,
+    pub asserts: Vec<String>,
+    pub request_body_parameter: String,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -40,9 +44,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut outputs: Vec<Output> = vec![];
 
-    // TODO probably need to include header parameters and query parameters in GETs as well as
-    // asserting the returned body
-    // probably need to include sample request body for POST/PATCH
     let openapi: OpenAPI = serde_yaml::from_str(&content).expect("Could not deserialize input");
     for (path, method, operation) in openapi.operations() {
         let name = operation
@@ -228,6 +229,7 @@ HTTP {{ expected_status_code }}
     for output in outputs.iter() {
         let content = template
             .render(context! {
+                name => output.name,
                 method => output.method,
                 path => output.path,
                 expected_status_code => output.expected_status_code,
