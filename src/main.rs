@@ -176,6 +176,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             "output.hurl",
             r#"{{ method }} {{ '{{ baseurl }}' }}{{ path | safe }}
 Authorization: Bearer {{ '{{ authorization }}' }}
+Prefer: code={{ expected_status_code }}
 {% for header in header_parameters %}{{ header }}: 
 {% endfor %}{% if query_parameters %}
 [QueryStringParams]
