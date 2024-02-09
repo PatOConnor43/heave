@@ -1,3 +1,8 @@
+# Version 0.2.0 (2024-02-8)
+
+New features:
+- Added support for request bodies. The schema should be recursively generated in the hurl file with empty strings or 0.
+
 # Version 0.1.0 (2024-02-8)
 
 Initial Release! Here are some things that seem to work:
