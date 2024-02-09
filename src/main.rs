@@ -405,15 +405,21 @@ fn generate_request_body_from_schema(
     level: usize,
 ) -> Option<String> {
     if let openapiv3::SchemaKind::Type(schema_type) = &schema.schema_kind {
+        // A small helper that takes properties that may or may not have names and formats them
+        // accordingly. If they have a name, start by indenting them, print the named property,
+        // then give it a default value. If there is no name, just print the default value.
+        let single_property_formatter =
+            |name: Option<String>, level: usize, default: &str| -> String {
+                match name {
+                    Some(name) => format!("{}\"{}\": {}", " ".repeat(level), name, default),
+                    None => format!("{}", default),
+                }
+            };
         return match schema_type {
-            openapiv3::Type::String(_) => {
-                Some(format!("{}\"{}\": \"\"", " ".repeat(level), name.unwrap()))
-            }
-            openapiv3::Type::Number(_) => {
-                Some(format!("{}\"{}\": 0", " ".repeat(level), name.unwrap()))
-            }
-            openapiv3::Type::Integer(_) => {
-                Some(format!("{}\"{}\": 0", " ".repeat(level), name.unwrap()))
+            openapiv3::Type::Boolean(_) => Some(single_property_formatter(name, level, "false")),
+            openapiv3::Type::String(_) => Some(single_property_formatter(name, level, "\"\"")),
+            openapiv3::Type::Number(_) | openapiv3::Type::Integer(_) => {
+                Some(single_property_formatter(name, level, "0"))
             }
             openapiv3::Type::Object(ob) => {
                 let properties = &ob.properties;
@@ -483,9 +489,6 @@ fn generate_request_body_from_schema(
                         " ".repeat(level)
                     )),
                 }
-            }
-            openapiv3::Type::Boolean(_) => {
-                Some(format!("{}\"{}\": true", " ".repeat(level), name.unwrap()))
             }
         };
     } else {
