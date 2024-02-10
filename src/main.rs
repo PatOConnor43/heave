@@ -121,7 +121,14 @@ fn generate(openapi: openapiv3::OpenAPI, output_directory: PathBuf) -> Result<()
                 break;
             }
             let schema = schema.unwrap();
-            request_body_parameter = generate_request_body_from_schema(&openapi, &schema, None, 0);
+            request_body_parameter = generate_request_body_from_schema(&openapi, &schema, None);
+            if let Some(body) = &request_body_parameter {
+                let a = serde_json::from_str::<serde_json::Value>(body).unwrap();
+                let body = serde_json::to_string_pretty(&a);
+                if let Ok(body) = body {
+                    request_body_parameter = Some(body);
+                }
+            };
         }
 
         for (status_code, response) in operation.responses.responses.iter() {
@@ -404,24 +411,22 @@ fn generate_request_body_from_schema(
     openapi: &openapiv3::OpenAPI,
     schema: &openapiv3::Schema,
     name: Option<String>,
-    level: usize,
 ) -> Option<String> {
     if let openapiv3::SchemaKind::Type(schema_type) = &schema.schema_kind {
         // A small helper that takes properties that may or may not have names and formats them
         // accordingly. If they have a name, start by indenting them, print the named property,
         // then give it a default value. If there is no name, just print the default value.
-        let single_property_formatter =
-            |name: Option<String>, level: usize, default: &str| -> String {
-                match name {
-                    Some(name) => format!("{}\"{}\": {}", " ".repeat(level), name, default),
-                    None => format!("{}", default),
-                }
-            };
+        let single_property_formatter = |name: Option<String>, default: &str| -> String {
+            match name {
+                Some(name) => format!("\"{}\": {}", name, default),
+                None => format!("{}", default),
+            }
+        };
         return match schema_type {
-            openapiv3::Type::Boolean(_) => Some(single_property_formatter(name, level, "false")),
-            openapiv3::Type::String(_) => Some(single_property_formatter(name, level, "\"\"")),
+            openapiv3::Type::Boolean(_) => Some(single_property_formatter(name, "false")),
+            openapiv3::Type::String(_) => Some(single_property_formatter(name, "\"\"")),
             openapiv3::Type::Number(_) | openapiv3::Type::Integer(_) => {
-                Some(single_property_formatter(name, level, "0"))
+                Some(single_property_formatter(name, "0"))
             }
             openapiv3::Type::Object(ob) => {
                 let properties = &ob.properties;
@@ -432,12 +437,8 @@ fn generate_request_body_from_schema(
                         return None;
                     }
                     let inner = inner.unwrap();
-                    let request_body = generate_request_body_from_schema(
-                        &openapi,
-                        &inner,
-                        Some(name.to_string()),
-                        level + 2,
-                    );
+                    let request_body =
+                        generate_request_body_from_schema(&openapi, &inner, Some(name.to_string()));
                     child_request_bodies.push(request_body);
                 }
                 let stringified_body = child_request_bodies
@@ -446,18 +447,8 @@ fn generate_request_body_from_schema(
                     .collect::<Vec<String>>()
                     .join(",\n");
                 return match name {
-                    Some(name) => Some(format!(
-                        "{}\"{}\": {{{}}}",
-                        " ".repeat(level),
-                        name,
-                        stringified_body
-                    )),
-                    None => Some(format!(
-                        "{}{{\n{}\n{}}}",
-                        " ".repeat(level),
-                        stringified_body,
-                        " ".repeat(level)
-                    )),
+                    Some(name) => Some(format!("\"{}\": {{{}}}", name, stringified_body)),
+                    None => Some(format!("{{\n{}\n}}", stringified_body,)),
                 };
             }
             openapiv3::Type::Array(array) => {
@@ -471,25 +462,14 @@ fn generate_request_body_from_schema(
                     return None;
                 }
                 let inner = inner.unwrap();
-                let child_request_body =
-                    generate_request_body_from_schema(&openapi, &inner, None, level + 2);
+                let child_request_body = generate_request_body_from_schema(&openapi, &inner, None);
                 if child_request_body.is_none() {
                     return None;
                 }
                 let child_request_body = child_request_body.unwrap();
                 match name {
-                    Some(name) => Some(format!(
-                        "{}\"{}\": [{}]",
-                        " ".repeat(level),
-                        name,
-                        child_request_body
-                    )),
-                    None => Some(format!(
-                        "{}[\n{}\n{}]",
-                        " ".repeat(level),
-                        child_request_body,
-                        " ".repeat(level)
-                    )),
+                    Some(name) => Some(format!("\"{}\": [{}]", name, child_request_body,)),
+                    None => Some(format!("[{}]", child_request_body)),
                 }
             }
         };
