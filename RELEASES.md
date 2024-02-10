@@ -1,3 +1,12 @@
+# Version 0.4.0 (2024-02-09)
+
+Bug Fixes:
+- Better JSON pretty printing for request bodies.
+
+Chores:
+- Added cargo-insta for snapshot testing. This should make it easy to accumulate some specs and verify the outputs come out as expected
+- Added GitHub action for CI to automate test running.
+
 # Version 0.3.0 (2024-02-09)
 
 New features:
