@@ -2,16 +2,22 @@ POST {{ baseurl }}/pet
 Authorization: Bearer {{ authorization }}
 Prefer: code=200
 {
+  "category": {
+    "id": 0,
+    "name": ""
+  },
   "id": 0,
   "name": "",
-  "category": {    "id": 0,
-    "name": ""},
-  "photoUrls": [""],
-  "tags": [    {
+  "photoUrls": [
+    ""
+  ],
+  "status": "",
+  "tags": [
+    {
       "id": 0,
       "name": ""
-    }],
-  "status": ""
+    }
+  ]
 }
 HTTP 200
 
