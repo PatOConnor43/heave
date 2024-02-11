@@ -169,8 +169,9 @@ fn generate(openapi: openapiv3::OpenAPI, output_directory: PathBuf) -> Result<()
                                 continue;
                             }
                             let schema = schema.unwrap().as_item().unwrap();
+                            let is_required = true;
                             let mut new_asserts =
-                                generate_assert_from_schema(&openapi, schema, "$");
+                                generate_assert_from_schema(&openapi, schema, "$", is_required);
                             asserts.append(&mut new_asserts);
                         }
                         openapiv3::ReferenceOr::Item(item) => {
@@ -188,8 +189,9 @@ fn generate(openapi: openapiv3::OpenAPI, output_directory: PathBuf) -> Result<()
                                 continue;
                             }
                             let schema = schema.unwrap();
+                            let is_required = true;
                             let mut new_asserts =
-                                generate_assert_from_schema(&openapi, schema, "$");
+                                generate_assert_from_schema(&openapi, schema, "$", is_required);
                             asserts.append(&mut new_asserts);
                         }
                     };
@@ -259,21 +261,68 @@ fn generate_assert_from_schema(
     openapi: &openapiv3::OpenAPI,
     schema: &openapiv3::Schema,
     jsonpath: &str,
+    is_required: bool,
 ) -> Vec<String> {
     let mut asserts = vec![];
+    let is_required_formatter = |jsonpath: &str, default: &str, is_required: bool| -> String {
+        format!(
+            "{}jsonpath \"{}\" {}",
+            if is_required { "" } else { "#" },
+            jsonpath,
+            default
+        )
+    };
     if let openapiv3::SchemaKind::Type(schema_type) = &schema.schema_kind {
         match schema_type {
+            openapiv3::Type::Boolean(_) => {
+                asserts.push(is_required_formatter(&jsonpath, "isBoolean", is_required))
+            }
             openapiv3::Type::String(_) => {
-                asserts.push(format!("jsonpath \"{}\" isString", jsonpath))
+                asserts.push(is_required_formatter(&jsonpath, "isString", is_required))
             }
             openapiv3::Type::Number(_) => {
-                asserts.push(format!("jsonpath \"{}\" isNumber", jsonpath))
+                asserts.push(is_required_formatter(&jsonpath, "isNumber", is_required))
             }
             openapiv3::Type::Integer(_) => {
-                asserts.push(format!("jsonpath \"{}\" isInteger", jsonpath))
+                asserts.push(is_required_formatter(&jsonpath, "isInteger", is_required))
+            }
+            openapiv3::Type::Array(a) => {
+                asserts.push(is_required_formatter(
+                    &jsonpath,
+                    "isCollection",
+                    is_required,
+                ));
+                let items = &a.items;
+                if items.is_none() {
+                    return asserts;
+                }
+                let items = items.as_ref().unwrap();
+                let inner = resolve_schema_box(openapi, &items);
+                if inner.is_none() {
+                    return asserts;
+                }
+                let inner = inner.unwrap();
+
+                // Take the existing path and index the first element in the list.
+                let inner_jsonpath = format!("{}[0]", jsonpath);
+
+                // is_required is always false because a list may always be empty
+                let is_required = false;
+
+                let mut child_asserts = generate_assert_from_schema(
+                    openapi,
+                    inner,
+                    inner_jsonpath.as_ref(),
+                    is_required,
+                );
+                asserts.append(&mut child_asserts);
             }
             openapiv3::Type::Object(ob) => {
-                asserts.push(format!("jsonpath \"{}\" isCollection", jsonpath));
+                asserts.push(is_required_formatter(
+                    &jsonpath,
+                    "isCollection",
+                    is_required,
+                ));
                 let properties = &ob.properties;
                 for (name, prop) in properties.iter() {
                     let inner = resolve_schema_box(openapi, prop);
@@ -289,16 +338,15 @@ fn generate_assert_from_schema(
                     } else {
                         format!("{}.{}", jsonpath, name)
                     };
-                    let mut child_asserts =
-                        generate_assert_from_schema(openapi, inner, inner_jsonpath.as_ref());
+                    let child_is_required = is_required && ob.required.contains(name);
+                    let mut child_asserts = generate_assert_from_schema(
+                        openapi,
+                        inner,
+                        inner_jsonpath.as_ref(),
+                        child_is_required,
+                    );
                     asserts.append(&mut child_asserts);
                 }
-            }
-            openapiv3::Type::Array(_) => {
-                asserts.push(format!("jsonpath \"{}\" isCollection", jsonpath))
-            }
-            openapiv3::Type::Boolean(_) => {
-                asserts.push(format!("jsonpath \"{}\" isBoolean", jsonpath))
             }
         }
     } else {
