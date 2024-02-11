@@ -35,4 +35,3 @@ jsonpath "$.photoUrls" isCollection
 #jsonpath "$.tags[0].id" isInteger
 #jsonpath "$.tags[0].name" isString
 #jsonpath "$.status" isString
-
