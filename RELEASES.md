@@ -1,3 +1,13 @@
+# Version 0.5.0 (2024-02-10)
+
+New features:
+- Asserts are generated for schemas inside arrays now. Previously the only assert that was created was whether or not it was a collection. Now the schema is analyzed and asserts are generated for the first item in that array.
+- Optional response fields are now generated with commented out asserts. This felt like a reasonable compromise since the spec doesn't guarantee that those fields will be present. The behavior works like this:
+  - If the name of the field is in the objects required attribute, it will generate with a non-commented out assert
+  - If the name of the field is not in the objects required attribute, it will not generate with a non-commented out assert
+  - If an object is optional, all of it's children asserts will be commented out
+  - If generating asserts for the items in an array, all of those will be commented out because the list _could be_ empty
+
 # Version 0.4.0 (2024-02-09)
 
 Bug Fixes:
