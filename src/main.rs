@@ -49,6 +49,12 @@ pub struct Output {
     pub asserts: Vec<String>,
     pub request_body_parameter: String,
 }
+
+pub enum InputSpecExtension {
+    Json,
+    Yaml,
+}
+
 const DEFAULT_HURL_TEMPLATE: &str = r#"{{ method }} {{ '{{ baseurl }}' }}{{ path | safe }}
 Authorization: Bearer {{ '{{ authorization }}' }}
 Prefer: code={{ expected_status_code }}
@@ -78,7 +84,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 Some(t) => {
                     let metadata = std::fs::metadata(&t)?;
                     if !metadata.is_file() {
-                        return Err("template must be a file".into());
+                        return Err("Template must be a file".into());
                     }
                     let template_content = std::fs::read_to_string(t);
                     let template_content = template_content.unwrap();
@@ -86,11 +92,30 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
                 None => DEFAULT_HURL_TEMPLATE.to_string(),
             };
+            let input_path = &args.path;
+            let input_metadata = std::fs::metadata(&input_path)?;
+            if !input_metadata.is_file() {
+                return Err("Input spec must be a file".into());
+            }
+            let input_extension = match &input_path.extension() {
+                Some(ext) => match ext.to_str() {
+                    Some("json") => Ok(InputSpecExtension::Json),
+                    Some("yaml") => Ok(InputSpecExtension::Yaml),
+                    _ => Err("Input spec must be json or yaml file"),
+                },
+                None => Err("Input spec must be json or yaml file"),
+            }?;
 
-            let content = std::fs::read_to_string(&args.path)?;
+            let content = std::fs::read_to_string(&input_path)?;
+            let openapi: OpenAPI = match input_extension {
+                InputSpecExtension::Json => {
+                    serde_json::from_str(&content).expect("Could not deserialize input")
+                }
+                InputSpecExtension::Yaml => {
+                    serde_yaml::from_str(&content).expect("Could not deserialize input")
+                }
+            };
 
-            let openapi: OpenAPI =
-                serde_yaml::from_str(&content).expect("Could not deserialize input");
             generate(openapi, output_directory, &template)
         }
         Commands::Template => {
@@ -579,6 +604,7 @@ mod tests {
 
     #[test]
     fn petstore() -> Result<(), Box<dyn Error>> {
+        // Testing json and yaml in this same test so I make sure the output snapshots are the same
         let content = std::fs::read_to_string("src/snapshots/petstore/petstore.yaml")?;
         let openapi: OpenAPI = serde_yaml::from_str(&content).expect("Could not deserialize input");
         let output_directory = PathBuf::from_str("src/snapshots/petstore")?;
@@ -586,10 +612,27 @@ mod tests {
         let mut settings = insta::Settings::clone_current();
         settings.set_omit_expression(true);
         settings.bind(|| {
-            glob!("snapshots/petstore/*.hurl", |path| {
-                let input = std::fs::read_to_string(path).unwrap();
-                assert_snapshot!(input);
-            });
+            insta::allow_duplicates! {
+                glob!("snapshots/petstore/*.hurl", |path| {
+                    let input = std::fs::read_to_string(path).unwrap();
+                    assert_snapshot!(input);
+                });
+            };
+        });
+
+        let content = std::fs::read_to_string("src/snapshots/petstore/petstore.json")?;
+        let openapi: OpenAPI = serde_json::from_str(&content).expect("Could not deserialize input");
+        let output_directory = PathBuf::from_str("src/snapshots/petstore")?;
+        generate(openapi, output_directory, crate::DEFAULT_HURL_TEMPLATE)?;
+        let mut settings = insta::Settings::clone_current();
+        settings.set_omit_expression(true);
+        settings.bind(|| {
+            insta::allow_duplicates! {
+                glob!("snapshots/petstore/*.hurl", |path| {
+                    let input = std::fs::read_to_string(path).unwrap();
+                    assert_snapshot!(input);
+                });
+            }
         });
 
         Ok(())
