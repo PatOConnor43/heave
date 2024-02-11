@@ -1,3 +1,11 @@
+# Version 0.7.0 (2024-02-11)
+
+New features:
+- Adds support for json specs
+
+Chores:
+- Add tests to make sure the output from json specs matches yaml specs
+
 # Version 0.6.0 (2024-02-11)
 
 🚨🚨 Breaking change🚨🚨:
