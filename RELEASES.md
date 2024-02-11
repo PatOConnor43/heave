@@ -1,3 +1,18 @@
+# Version 0.6.0 (2024-02-11)
+
+🚨🚨 Breaking change🚨🚨:
+- File generation is now behind the `generate` subcommand.
+- Please use `heave generate <spec> <output>`
+
+New features:
+- `template` subcommand
+  - `heave template` now prints the default template
+- `generate` subcommand
+  - takes `--template` option for custom template
+
+Chores:
+- Add Getting Started section to README
+
 # Version 0.5.0 (2024-02-10)
 
 New features:
