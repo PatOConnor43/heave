@@ -3,7 +3,7 @@ Authorization: Bearer {{ authorization }}
 Prefer: code=200
 
 [QueryStringParams]
-tags: 
+tags:
 
 HTTP 200
 
@@ -22,4 +22,3 @@ jsonpath "$" isCollection
 #jsonpath "$[0].tags[0].id" isInteger
 #jsonpath "$[0].tags[0].name" isString
 #jsonpath "$[0].status" isString
-

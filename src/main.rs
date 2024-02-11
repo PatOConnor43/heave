@@ -1,13 +1,28 @@
 use std::{error::Error, ops::Deref, path::PathBuf};
 
-use clap::Parser;
+use clap::{Args, Parser, Subcommand};
 use minijinja::{context, Environment};
 use openapiv3::{OpenAPI, ReferenceOr};
 
 /// Program to generate hurl files from openapi schemas
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
-struct Args {
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Debug, Subcommand)]
+enum Commands {
+    #[command(about = "Generate hurl files from OpenAPI spec.")]
+    Generate(GenerateArgs),
+
+    #[command(about = "Print the default template.")]
+    Template,
+}
+
+#[derive(Args, Debug)]
+struct GenerateArgs {
     #[arg(
         help = "The path to an OpenAPI spec. This spec must not contain references to other files."
     )]
@@ -15,6 +30,9 @@ struct Args {
 
     #[arg(help = "The directory where generated hurl files will be created.")]
     output: PathBuf,
+
+    #[arg(long, help = "Prints the default template.")]
+    template: Option<PathBuf>,
 }
 
 /// The struct used to capture output variables.
@@ -31,21 +49,65 @@ pub struct Output {
     pub asserts: Vec<String>,
     pub request_body_parameter: String,
 }
+const DEFAULT_HURL_TEMPLATE: &str = r#"{{ method }} {{ '{{ baseurl }}' }}{{ path | safe }}
+Authorization: Bearer {{ '{{ authorization }}' }}
+Prefer: code={{ expected_status_code }}
+{% for header in header_parameters %}{{ header }}:
+{% endfor %}{% if query_parameters %}
+[QueryStringParams]
+{% for query in query_parameters %}{{ query }}:
+{% endfor %}{% endif %}{{ request_body_parameter }}
+HTTP {{ expected_status_code }}
+{% if asserts %}
+[Asserts]
+{% for assert in asserts %}{{ assert }}
+{% endfor %}{% endif %}
+"#;
+
 fn main() -> Result<(), Box<dyn Error>> {
-    let cli = Args::parse();
-    let output_directory = cli.output;
-    let output_directory_metadata = std::fs::metadata(&output_directory)?;
-    if !output_directory_metadata.is_dir() {
-        return Err("Output must be a directory".into());
+    let cli = Cli::parse();
+    match cli.command {
+        Commands::Generate(args) => {
+            let output_directory = args.output;
+            let output_directory_metadata = std::fs::metadata(&output_directory)?;
+            if !output_directory_metadata.is_dir() {
+                return Err("Output must be a directory".into());
+            }
+
+            let template = match &args.template {
+                Some(t) => {
+                    let metadata = std::fs::metadata(&t)?;
+                    if !metadata.is_file() {
+                        return Err("template must be a file".into());
+                    }
+                    let template_content = std::fs::read_to_string(t);
+                    let template_content = template_content.unwrap();
+                    template_content
+                }
+                None => DEFAULT_HURL_TEMPLATE.to_string(),
+            };
+
+            let content = std::fs::read_to_string(&args.path)?;
+
+            let openapi: OpenAPI =
+                serde_yaml::from_str(&content).expect("Could not deserialize input");
+            generate(openapi, output_directory, &template)
+        }
+        Commands::Template => {
+            println!("{}", DEFAULT_HURL_TEMPLATE);
+            Ok(())
+        }
     }
-
-    let content = std::fs::read_to_string(&cli.path)?;
-
-    let openapi: OpenAPI = serde_yaml::from_str(&content).expect("Could not deserialize input");
-    generate(openapi, output_directory)
 }
 
-fn generate(openapi: openapiv3::OpenAPI, output_directory: PathBuf) -> Result<(), Box<dyn Error>> {
+fn generate(
+    openapi: openapiv3::OpenAPI,
+    output_directory: PathBuf,
+    template: &str,
+) -> Result<(), Box<dyn Error>> {
+    let mut jinja_env = Environment::new();
+    // TODO define actual error type
+    jinja_env.add_template("output.hurl", template)?;
     let mut outputs: Vec<Output> = vec![];
     for (path, method, operation) in openapi.operations() {
         let name = operation
@@ -214,27 +276,6 @@ fn generate(openapi: openapiv3::OpenAPI, output_directory: PathBuf) -> Result<()
         }
     }
 
-    let mut jinja_env = Environment::new();
-    jinja_env
-        .add_template(
-            "output.hurl",
-            r#"{{ method }} {{ '{{ baseurl }}' }}{{ path | safe }}
-Authorization: Bearer {{ '{{ authorization }}' }}
-Prefer: code={{ expected_status_code }}
-{% for header in header_parameters %}{{ header }}: 
-{% endfor %}{% if query_parameters %}
-[QueryStringParams]
-{% for query in query_parameters %}{{ query }}: 
-{% endfor %}{% endif %}{{ request_body_parameter }}
-HTTP {{ expected_status_code }}
-{% if asserts %}
-[Asserts]
-{% for assert in asserts %}{{ assert }}
-{% endfor %}{% endif %}
-
-"#,
-        )
-        .unwrap();
     let template = jinja_env.get_template("output.hurl").unwrap();
 
     for output in outputs.iter() {
@@ -541,7 +582,7 @@ mod tests {
         let content = std::fs::read_to_string("src/snapshots/petstore/petstore.yaml")?;
         let openapi: OpenAPI = serde_yaml::from_str(&content).expect("Could not deserialize input");
         let output_directory = PathBuf::from_str("src/snapshots/petstore")?;
-        generate(openapi, output_directory)?;
+        generate(openapi, output_directory, crate::DEFAULT_HURL_TEMPLATE)?;
         let mut settings = insta::Settings::clone_current();
         settings.set_omit_expression(true);
         settings.bind(|| {
