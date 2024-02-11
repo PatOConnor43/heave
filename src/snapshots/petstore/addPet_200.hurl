@@ -29,6 +29,10 @@ jsonpath "$.name" isString
 #jsonpath "$.category.id" isInteger
 #jsonpath "$.category.name" isString
 jsonpath "$.photoUrls" isCollection
-jsonpath "$.tags" isCollection
+#jsonpath "$.photoUrls[0]" isString
+#jsonpath "$.tags" isCollection
+#jsonpath "$.tags[0]" isCollection
+#jsonpath "$.tags[0].id" isInteger
+#jsonpath "$.tags[0].name" isString
 #jsonpath "$.status" isString
 

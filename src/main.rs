@@ -274,6 +274,9 @@ fn generate_assert_from_schema(
     };
     if let openapiv3::SchemaKind::Type(schema_type) = &schema.schema_kind {
         match schema_type {
+            openapiv3::Type::Boolean(_) => {
+                asserts.push(is_required_formatter(&jsonpath, "isBoolean", is_required))
+            }
             openapiv3::Type::String(_) => {
                 asserts.push(is_required_formatter(&jsonpath, "isString", is_required))
             }
@@ -282,6 +285,37 @@ fn generate_assert_from_schema(
             }
             openapiv3::Type::Integer(_) => {
                 asserts.push(is_required_formatter(&jsonpath, "isInteger", is_required))
+            }
+            openapiv3::Type::Array(a) => {
+                asserts.push(is_required_formatter(
+                    &jsonpath,
+                    "isCollection",
+                    is_required,
+                ));
+                let items = &a.items;
+                if items.is_none() {
+                    return asserts;
+                }
+                let items = items.as_ref().unwrap();
+                let inner = resolve_schema_box(openapi, &items);
+                if inner.is_none() {
+                    return asserts;
+                }
+                let inner = inner.unwrap();
+
+                // Take the existing path and index the first element in the list.
+                let inner_jsonpath = format!("{}[0]", jsonpath);
+
+                // is_required is always false because a list may always be empty
+                let is_required = false;
+
+                let mut child_asserts = generate_assert_from_schema(
+                    openapi,
+                    inner,
+                    inner_jsonpath.as_ref(),
+                    is_required,
+                );
+                asserts.append(&mut child_asserts);
             }
             openapiv3::Type::Object(ob) => {
                 asserts.push(is_required_formatter(
@@ -313,12 +347,6 @@ fn generate_assert_from_schema(
                     );
                     asserts.append(&mut child_asserts);
                 }
-            }
-            openapiv3::Type::Array(_) => {
-                asserts.push(format!("jsonpath \"{}\" isCollection", jsonpath))
-            }
-            openapiv3::Type::Boolean(_) => {
-                asserts.push(format!("jsonpath \"{}\" isBoolean", jsonpath))
             }
         }
     } else {
