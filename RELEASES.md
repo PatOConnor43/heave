@@ -1,3 +1,12 @@
+# Version 0.8.0 (2024-02-18)
+
+New features:
+- Adds support for Media Types that start with "application/json". This was
+  required to support specs that use "application/json;charset=utf-8".
+- Add the ability to look up a references Schema inside a Response. Previously
+  this application assumed the schema would be defined inline with the
+  response.
+
 # Version 0.7.0 (2024-02-11)
 
 New features:
