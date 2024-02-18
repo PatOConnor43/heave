@@ -2,7 +2,7 @@ use std::{error::Error, ops::Deref, path::PathBuf};
 
 use clap::{Args, Parser, Subcommand};
 use minijinja::{context, Environment};
-use openapiv3::{OpenAPI, ReferenceOr};
+use openapiv3::{MediaType, OpenAPI, ReferenceOr};
 
 /// Program to generate hurl files from openapi schemas
 #[derive(Parser, Debug)]
@@ -192,8 +192,13 @@ fn generate(
                 break;
             }
             let request_body = request_body.unwrap();
-            let content = &request_body.content;
-            let media_type = content.get("application/json");
+            let mut media_type: Option<&MediaType> = None;
+            for (media_type_key, media_type_val) in request_body.content.iter() {
+                if media_type_key.starts_with("application/json") {
+                    media_type = Some(media_type_val);
+                    break;
+                }
+            }
             if media_type.is_none() {
                 break;
             }
@@ -226,62 +231,35 @@ fn generate(
                 }
                 openapiv3::StatusCode::Code(code) => {
                     let name = format!("{}_{}.hurl", name, code);
-                    match response {
-                        openapiv3::ReferenceOr::Reference { reference } => {
-                            let response_name = reference.split("#/components/responses/").nth(1);
-                            if response_name.is_none() {
-                                continue;
-                            }
-                            let response_name = response_name.unwrap();
-                            let components = &openapi.components;
-                            if components.is_none() {
-                                continue;
-                            }
-                            let found_response =
-                                components.as_ref().unwrap().responses.get(response_name);
-                            if found_response.is_none() {
-                                continue;
-                            }
-                            let found_response = found_response.unwrap();
-                            if found_response.as_item().is_none() {
-                                continue;
-                            }
-                            let found_response = found_response.as_item().unwrap();
-                            let content = found_response.content.get("application/json");
-                            if content.is_none() {
-                                continue;
-                            }
-                            let schema = content.unwrap().schema.as_ref();
-                            if schema.is_none() {
-                                continue;
-                            }
-                            let schema = schema.unwrap().as_item().unwrap();
-                            let is_required = true;
-                            let mut new_asserts =
-                                generate_assert_from_schema(&openapi, schema, "$", is_required);
-                            asserts.append(&mut new_asserts);
+                    let response = resolve_response(&openapi, response);
+                    if response.is_none() {
+                        continue;
+                    }
+                    let response = response.unwrap();
+                    let mut media_type: Option<&MediaType> = None;
+                    for (media_type_key, media_type_val) in response.content.iter() {
+                        if media_type_key.starts_with("application/json") {
+                            media_type = Some(media_type_val);
+                            break;
                         }
-                        openapiv3::ReferenceOr::Item(item) => {
-                            let content = item.content.get("application/json");
-                            if content.is_none() {
-                                continue;
-                            }
-                            let schema = content.unwrap().schema.as_ref();
-                            if schema.is_none() {
-                                continue;
-                            }
-                            let schema = schema.unwrap();
-                            let schema = resolve_schema(&openapi, schema);
-                            if schema.is_none() {
-                                continue;
-                            }
-                            let schema = schema.unwrap();
-                            let is_required = true;
-                            let mut new_asserts =
-                                generate_assert_from_schema(&openapi, schema, "$", is_required);
-                            asserts.append(&mut new_asserts);
-                        }
-                    };
+                    }
+                    if media_type.is_none() {
+                        continue;
+                    }
+                    let schema = media_type.unwrap().schema.as_ref();
+                    if schema.is_none() {
+                        continue;
+                    }
+                    let schema = schema.unwrap();
+                    let schema = resolve_schema(&openapi, schema);
+                    if schema.is_none() {
+                        continue;
+                    }
+                    let schema = schema.unwrap();
+                    let is_required = true;
+                    let mut new_asserts =
+                        generate_assert_from_schema(&openapi, schema, "$", is_required);
+                    asserts.append(&mut new_asserts);
 
                     let output = Output {
                         expected_status_code: *code,
@@ -591,6 +569,38 @@ fn generate_request_body_from_schema(
         println!("Only explicit types for responses are supported. Using AnyOf, Allof, etc. is not supported.");
     }
     None
+}
+
+fn resolve_response<'a>(
+    openapi: &'a openapiv3::OpenAPI,
+    response: &'a openapiv3::ReferenceOr<openapiv3::Response>,
+) -> Option<&'a openapiv3::Response> {
+    match response {
+        ReferenceOr::Item(item) => {
+            return Some(item);
+        }
+        ReferenceOr::Reference { reference } => {
+            let response_name = reference.split("#/components/responses/").nth(1);
+            if response_name.is_none() {
+                return None;
+            }
+            let response_name = response_name.unwrap();
+            let components = &openapi.components;
+            if components.is_none() {
+                return None;
+            }
+            let found_response = components.as_ref().unwrap().responses.get(response_name);
+            if found_response.is_none() {
+                return None;
+            }
+            let found_response = found_response.unwrap();
+            if found_response.as_item().is_none() {
+                return None;
+            }
+            let schema = found_response.as_item().unwrap();
+            Some(schema)
+        }
+    }
 }
 
 #[cfg(test)]
