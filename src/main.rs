@@ -1,4 +1,3 @@
-use anyhow::{anyhow, bail, Context};
 use clap::{Args, Parser, Subcommand};
 use minijinja::{context, Environment};
 use openapiv3::{MediaType, OpenAPI, ReferenceOr};
@@ -95,6 +94,47 @@ pub enum HeaveError {
         path: String,
         reference: String,
     },
+    #[error(
+        "RequestBody references must be start with `#/components/requestBodies/`. Path: `{}`, Operation: `{}`, Reference: `{}`.", .0.path, .0.operation, .0.reference
+    )]
+    MalformedRequestBodyReference(DiagnosticContext),
+    #[error(
+        "Failed to find RequestBody reference. Path: `{}`, Operation: `{}`, Reference: `{}`.", .0.path, .0.operation, .0.reference
+    )]
+    MissingRequestBodyReference(DiagnosticContext),
+    // TODO maybe this should be allowed?
+    #[error(
+        "RequestBodies defined in `#/components/requestBodies/` must not contain references. Path: `{}`, Operation: `{}`, Reference: `{}`.", .0.path, .0.operation, .0.reference
+    )]
+    FailedRequestBodyDereference(DiagnosticContext),
+    #[error(
+        "Missing application/json MediaType for RequestBody. Path: `{}`, Operation: `{}`, Reference: `{}`.", .0.path, .0.operation, .0.reference
+    )]
+    MissingApplicationJsonRequestBodyMediaType(DiagnosticContext),
+    #[error(
+        "Missing Schema definition for MediaType. Path: `{}`, Operation: `{}`, Reference: `{}`.", .0.path, .0.operation, .0.reference
+    )]
+    MissingSchemaDefinitionForMediaType(DiagnosticContext),
+    #[error(
+        "Schema references must be start with `#/components/schemas/`. Path: `{}`, Operation: `{}`, Reference: `{}`.", .0.path, .0.operation, .0.reference
+    )]
+    MalformedSchemaReference(DiagnosticContext),
+    #[error(
+        "Failed to find Schema reference. Path: `{}`, Operation: `{}`, Reference: `{}`.", .0.path, .0.operation, .0.reference
+    )]
+    MissingSchemaReference(DiagnosticContext),
+    // TODO maybe this should be allowed?
+    #[error(
+        "Schemas defined in `#/components/schemas/` must not contain references. Path: `{}`, Operation: `{}`, Reference: `{}`.", .0.path, .0.operation, .0.reference
+    )]
+    FailedSchemaDereference(DiagnosticContext),
+}
+
+#[derive(Debug, Clone)]
+pub struct DiagnosticContext {
+    operation: String,
+    path: String,
+    reference: String,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -171,6 +211,11 @@ fn generate(
         let mut query_parameters: Vec<String> = vec![];
         let mut header_parameters: Vec<String> = vec![];
         let mut request_body_parameter: Option<String> = None;
+        let context = DiagnosticContext {
+            path: path.to_string(),
+            operation: name.to_string(),
+            reference: "".to_string(),
+        };
         for parameter in operation.parameters.iter() {
             match parameter {
                 openapiv3::ReferenceOr::Reference { reference } => {
@@ -228,7 +273,9 @@ fn generate(
         }
 
         if let Some(request_body) = &operation.request_body {
-            let request_body = resolve_request_body(&openapi, &request_body);
+            let (request_body, mut inner_diagnostics) =
+                resolve_request_body(&openapi, &request_body, &context);
+            diagnostics.append(&mut inner_diagnostics);
             if request_body.is_none() {
                 break;
             }
@@ -241,15 +288,22 @@ fn generate(
                 }
             }
             if media_type.is_none() {
+                diagnostics.push(HeaveError::MissingApplicationJsonRequestBodyMediaType(
+                    context.clone(),
+                ));
                 break;
             }
             let media_type = media_type.unwrap();
             let schema = &media_type.schema;
             if schema.is_none() {
+                diagnostics.push(HeaveError::MissingSchemaDefinitionForMediaType(
+                    context.clone(),
+                ));
                 break;
             }
             let schema = schema.as_ref().unwrap();
-            let schema = resolve_schema(&openapi, &schema);
+            let (schema, mut inner_diagnostics) = resolve_schema(&openapi, &schema, &context);
+            diagnostics.append(&mut inner_diagnostics);
             if schema.is_none() {
                 break;
             }
@@ -292,7 +346,9 @@ fn generate(
                         continue;
                     }
                     let schema = schema.unwrap();
-                    let schema = resolve_schema(&openapi, schema);
+                    let (schema, mut inner_diagnostics) =
+                        resolve_schema(&openapi, schema, &context);
+                    diagnostics.append(&mut inner_diagnostics);
                     if schema.is_none() {
                         continue;
                     }
@@ -476,31 +532,46 @@ fn resolve_schema_box<'a>(
 fn resolve_schema<'a>(
     openapi: &'a openapiv3::OpenAPI,
     schema: &'a openapiv3::ReferenceOr<openapiv3::Schema>,
-) -> Option<&'a openapiv3::Schema> {
+    diagnostic_context: &DiagnosticContext,
+) -> (Option<&'a openapiv3::Schema>, Vec<HeaveError>) {
+    let mut diagnostics: Vec<HeaveError> = vec![];
     match schema {
         ReferenceOr::Item(item) => {
-            return Some(item);
+            return (Some(item), diagnostics);
         }
         ReferenceOr::Reference { reference } => {
             let schema_name = reference.split("#/components/schemas/").nth(1);
             if schema_name.is_none() {
-                return None;
+                diagnostics.push(HeaveError::MalformedSchemaReference(DiagnosticContext {
+                    reference: reference.to_string(),
+                    ..diagnostic_context.clone()
+                }));
+                return (None, diagnostics);
             }
             let schema_name = schema_name.unwrap();
             let components = &openapi.components;
             if components.is_none() {
-                return None;
+                diagnostics.push(HeaveError::MissingComponents);
+                return (None, diagnostics);
             }
             let found_schema = components.as_ref().unwrap().schemas.get(schema_name);
             if found_schema.is_none() {
-                return None;
+                diagnostics.push(HeaveError::MissingSchemaReference(DiagnosticContext {
+                    reference: reference.to_string(),
+                    ..diagnostic_context.clone()
+                }));
+                return (None, diagnostics);
             }
             let found_schema = found_schema.unwrap();
             if found_schema.as_item().is_none() {
-                return None;
+                diagnostics.push(HeaveError::FailedSchemaDereference(DiagnosticContext {
+                    reference: reference.to_string(),
+                    ..diagnostic_context.clone()
+                }));
+                return (None, diagnostics);
             }
             let schema = found_schema.as_item().unwrap();
-            Some(schema)
+            (Some(schema), diagnostics)
         }
     }
 }
@@ -508,20 +579,29 @@ fn resolve_schema<'a>(
 fn resolve_request_body<'a>(
     openapi: &'a openapiv3::OpenAPI,
     request_body: &'a openapiv3::ReferenceOr<openapiv3::RequestBody>,
-) -> Option<&'a openapiv3::RequestBody> {
+    diagnostic_context: &DiagnosticContext,
+) -> (Option<&'a openapiv3::RequestBody>, Vec<HeaveError>) {
+    let mut diagnostics: Vec<HeaveError> = vec![];
     match request_body {
         ReferenceOr::Item(item) => {
-            return Some(item);
+            return (Some(item), diagnostics);
         }
         ReferenceOr::Reference { reference } => {
             let request_body_name = reference.split("#/components/requestBodies/").nth(1);
             if request_body_name.is_none() {
-                return None;
+                diagnostics.push(HeaveError::MalformedRequestBodyReference(
+                    DiagnosticContext {
+                        reference: reference.to_string(),
+                        ..diagnostic_context.clone()
+                    },
+                ));
+                return (None, diagnostics);
             }
             let request_body_name = request_body_name.unwrap();
             let components = &openapi.components;
             if components.is_none() {
-                return None;
+                diagnostics.push(HeaveError::MissingComponents);
+                return (None, diagnostics);
             }
             let found_request_body = components
                 .as_ref()
@@ -529,14 +609,24 @@ fn resolve_request_body<'a>(
                 .request_bodies
                 .get(request_body_name);
             if found_request_body.is_none() {
-                return None;
+                diagnostics.push(HeaveError::MissingRequestBodyReference(DiagnosticContext {
+                    reference: reference.to_string(),
+                    ..diagnostic_context.clone()
+                }));
+                return (None, diagnostics);
             }
             let found_request_body = found_request_body.unwrap();
             if found_request_body.as_item().is_none() {
-                return None;
+                diagnostics.push(HeaveError::FailedRequestBodyDereference(
+                    DiagnosticContext {
+                        reference: reference.to_string(),
+                        ..diagnostic_context.clone()
+                    },
+                ));
+                return (None, diagnostics);
             }
             let request_body = found_request_body.as_item().unwrap();
-            Some(request_body)
+            (Some(request_body), diagnostics)
         }
     }
 }
