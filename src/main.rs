@@ -1,8 +1,8 @@
-use std::{error::Error, ops::Deref, path::PathBuf};
-
+use anyhow::{anyhow, bail, Context};
 use clap::{Args, Parser, Subcommand};
 use minijinja::{context, Environment};
 use openapiv3::{MediaType, OpenAPI, ReferenceOr};
+use std::{error::Error, ops::Deref, path::PathBuf};
 
 /// Program to generate hurl files from openapi schemas
 #[derive(Parser, Debug)]
@@ -70,6 +70,33 @@ HTTP {{ expected_status_code }}
 {% endfor %}{% endif %}
 "#;
 
+#[derive(Debug, thiserror::Error)]
+pub enum HeaveError {
+    #[error("Error parsing custom minijinja template")]
+    JinjaError {
+        #[source]
+        source: minijinja::Error,
+    },
+    #[error(
+        "Parameter references must be start with `#/components/parameters/`. Path: `{path}`, Operation: `{operation}`, Reference: `{reference}`."
+    )]
+    MalformedParameterReference {
+        operation: String,
+        path: String,
+        reference: String,
+    },
+    #[error("Missing Components definition from schema. Please define a top-level `components` key in your spec.")]
+    MissingComponents,
+    #[error(
+        "Failed to find parameter reference. Path: `{path}`, Operation: `{operation}`, Reference: `{reference}`."
+    )]
+    MissingParameterReference {
+        operation: String,
+        path: String,
+        reference: String,
+    },
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
     match cli.command {
@@ -109,10 +136,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             let content = std::fs::read_to_string(&input_path)?;
             let openapi: OpenAPI = match input_extension {
                 InputSpecExtension::Json => {
-                    serde_json::from_str(&content).expect("Could not deserialize input")
+                    serde_json::from_str(&content).expect("Could not deserialize input as json")
                 }
                 InputSpecExtension::Yaml => {
-                    serde_yaml::from_str(&content).expect("Could not deserialize input")
+                    serde_yaml::from_str(&content).expect("Could not deserialize input as yaml")
                 }
             };
 
@@ -131,9 +158,11 @@ fn generate(
     template: &str,
 ) -> Result<(), Box<dyn Error>> {
     let mut jinja_env = Environment::new();
-    // TODO define actual error type
-    jinja_env.add_template("output.hurl", template)?;
+    jinja_env
+        .add_template("output.hurl", template)
+        .map_err(|e| HeaveError::JinjaError { source: e })?;
     let mut outputs: Vec<Output> = vec![];
+    let mut diagnostics: Vec<HeaveError> = vec![];
     for (path, method, operation) in openapi.operations() {
         let name = operation
             .operation_id
@@ -147,19 +176,31 @@ fn generate(
                 openapiv3::ReferenceOr::Reference { reference } => {
                     let parameter_name = reference.split("#/components/parameters/").nth(1);
                     if parameter_name.is_none() {
+                        diagnostics.push(HeaveError::MalformedParameterReference {
+                            operation: name.to_string(),
+                            path: path.to_string(),
+                            reference: reference.to_string(),
+                        });
                         continue;
                     }
                     let parameter_name = parameter_name.unwrap();
                     let components = &openapi.components;
                     if components.is_none() {
+                        diagnostics.push(HeaveError::MissingComponents);
                         continue;
                     }
                     let found_parameter =
                         components.as_ref().unwrap().parameters.get(parameter_name);
                     if found_parameter.is_none() {
+                        diagnostics.push(HeaveError::MissingParameterReference {
+                            operation: name.to_string(),
+                            path: path.to_string(),
+                            reference: reference.to_string(),
+                        });
                         continue;
                     }
                     let found_parameter = found_parameter.unwrap();
+                    // TODO add support for reference parameters
                     if found_parameter.as_item().is_none() {
                         continue;
                     }
@@ -298,6 +339,7 @@ fn generate(
         file_path.push(&output.name);
         std::fs::write(file_path, content)?;
     }
+    diagnostics.iter().for_each(|d| println!("{}", d));
     Ok(())
 }
 
