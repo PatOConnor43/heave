@@ -87,54 +87,87 @@ pub enum HeaveError {
     #[error("Missing Components definition from schema. Please define a top-level `components` key in your spec.")]
     MissingComponents,
     #[error(
-        "Failed to find parameter reference. Path: `{path}`, Operation: `{operation}`, Reference: `{reference}`."
+        "Failed to find parameter reference. Path: `{}`, Operation: `{}`, Reference: `{}`.", .context.path, .context.operation, .reference
     )]
     MissingParameterReference {
-        operation: String,
-        path: String,
+        context: DiagnosticContext,
         reference: String,
     },
     #[error(
-        "RequestBody references must be start with `#/components/requestBodies/`. Path: `{}`, Operation: `{}`, Reference: `{}`.", .0.path, .0.operation, .0.reference
+        "RequestBody references must be start with `#/components/requestBodies/`. Path: `{}`, Operation: `{}`, Reference: `{}`.", .context.path, .context.operation, .reference
     )]
-    MalformedRequestBodyReference(DiagnosticContext),
+    MalformedRequestBodyReference {
+        context: DiagnosticContext,
+        reference: String,
+    },
     #[error(
-        "Failed to find RequestBody reference. Path: `{}`, Operation: `{}`, Reference: `{}`.", .0.path, .0.operation, .0.reference
+        "Failed to find RequestBody reference. Path: `{}`, Operation: `{}`, Reference: `{}`.", .context.path, .context.operation, .reference
     )]
-    MissingRequestBodyReference(DiagnosticContext),
+    MissingRequestBodyReference {
+        context: DiagnosticContext,
+        reference: String,
+    },
     // TODO maybe this should be allowed?
     #[error(
-        "RequestBodies defined in `#/components/requestBodies/` must not contain references. Path: `{}`, Operation: `{}`, Reference: `{}`.", .0.path, .0.operation, .0.reference
+        "RequestBodies defined in `#/components/requestBodies/` must not contain references. Path: `{}`, Operation: `{}`, Reference: `{}`.", .context.path, .context.operation, .reference
     )]
-    FailedRequestBodyDereference(DiagnosticContext),
+    FailedRequestBodyDereference {
+        context: DiagnosticContext,
+        reference: String,
+    },
     #[error(
-        "Missing application/json MediaType for RequestBody. Path: `{}`, Operation: `{}`, Reference: `{}`.", .0.path, .0.operation, .0.reference
+        "Missing application/json MediaType for RequestBody. Path: `{}`, Operation: `{}`.", .context.path, .context.operation,
     )]
-    MissingApplicationJsonRequestBodyMediaType(DiagnosticContext),
+    MissingApplicationJsonRequestBodyMediaType { context: DiagnosticContext },
     #[error(
-        "Missing Schema definition for MediaType. Path: `{}`, Operation: `{}`, Reference: `{}`.", .0.path, .0.operation, .0.reference
+        "Missing Schema definition for MediaType. Path: `{}`, Operation: `{}`.", .context.path, .context.operation,
     )]
-    MissingSchemaDefinitionForMediaType(DiagnosticContext),
+    MissingSchemaDefinitionForMediaType { context: DiagnosticContext },
     #[error(
-        "Schema references must be start with `#/components/schemas/`. Path: `{}`, Operation: `{}`, Reference: `{}`.", .0.path, .0.operation, .0.reference
+        "Schema references must be start with `#/components/schemas/`. Path: `{}`, Operation: `{}`, Reference: `{}`.", .context.path, .context.operation, .reference
     )]
-    MalformedSchemaReference(DiagnosticContext),
+    MalformedSchemaReference {
+        context: DiagnosticContext,
+        reference: String,
+    },
     #[error(
-        "Failed to find Schema reference. Path: `{}`, Operation: `{}`, Reference: `{}`.", .0.path, .0.operation, .0.reference
+        "Failed to find Schema reference. Path: `{}`, Operation: `{}`, Reference: `{}`.", .context.path, .context.operation, .reference
     )]
-    MissingSchemaReference(DiagnosticContext),
+    MissingSchemaReference {
+        context: DiagnosticContext,
+        reference: String,
+    },
     // TODO maybe this should be allowed?
     #[error(
-        "Schemas defined in `#/components/schemas/` must not contain references. Path: `{}`, Operation: `{}`, Reference: `{}`.", .0.path, .0.operation, .0.reference
+        "Schemas defined in `#/components/schemas/` must not contain references. Path: `{}`, Operation: `{}`, Reference: `{}`.", .context.path, .context.operation, .reference
     )]
-    FailedSchemaDereference(DiagnosticContext),
+    FailedSchemaDereference {
+        context: DiagnosticContext,
+        reference: String,
+    },
+    #[error(
+        r#"
+-------------------------------------------
+UnsupportedRequestBodySchemaKindUnsupported
+
+Message: RequestBody Schema kind. Using AllOf, AnyOf, etc. is currently not supported.
+Path: {}
+Operation: {}
+Detected Kind: {}
+JSON path: {}"#,
+.context.path, .context.operation, .kind, .jsonpath
+    )]
+    UnsupportedRequestBodySchemaKind {
+        context: DiagnosticContext,
+        kind: String,
+        jsonpath: String,
+    },
 }
 
 #[derive(Debug, Clone)]
 pub struct DiagnosticContext {
     operation: String,
     path: String,
-    reference: String,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -214,7 +247,6 @@ fn generate(
         let context = DiagnosticContext {
             path: path.to_string(),
             operation: name.to_string(),
-            reference: "".to_string(),
         };
         for parameter in operation.parameters.iter() {
             match parameter {
@@ -238,8 +270,7 @@ fn generate(
                         components.as_ref().unwrap().parameters.get(parameter_name);
                     if found_parameter.is_none() {
                         diagnostics.push(HeaveError::MissingParameterReference {
-                            operation: name.to_string(),
-                            path: path.to_string(),
+                            context: context.clone(),
                             reference: reference.to_string(),
                         });
                         continue;
@@ -288,17 +319,14 @@ fn generate(
                 }
             }
             if media_type.is_none() {
-                diagnostics.push(HeaveError::MissingApplicationJsonRequestBodyMediaType(
-                    context.clone(),
-                ));
+                diagnostics
+                    .push(HeaveError::MissingApplicationJsonRequestBodyMediaType { context });
                 break;
             }
             let media_type = media_type.unwrap();
             let schema = &media_type.schema;
             if schema.is_none() {
-                diagnostics.push(HeaveError::MissingSchemaDefinitionForMediaType(
-                    context.clone(),
-                ));
+                diagnostics.push(HeaveError::MissingSchemaDefinitionForMediaType { context });
                 break;
             }
             let schema = schema.as_ref().unwrap();
@@ -421,95 +449,131 @@ fn generate_assert_from_schema(
             default
         )
     };
-    if let openapiv3::SchemaKind::Type(schema_type) = &schema.schema_kind {
-        match schema_type {
-            openapiv3::Type::Boolean(_) => {
-                asserts.push(is_required_formatter(&jsonpath, "isBoolean", is_required))
-            }
-            openapiv3::Type::String(_) => {
-                asserts.push(is_required_formatter(&jsonpath, "isString", is_required))
-            }
-            openapiv3::Type::Number(_) => {
-                asserts.push(is_required_formatter(&jsonpath, "isNumber", is_required))
-            }
-            openapiv3::Type::Integer(_) => {
-                asserts.push(is_required_formatter(&jsonpath, "isInteger", is_required))
-            }
-            openapiv3::Type::Array(a) => {
-                asserts.push(is_required_formatter(
-                    &jsonpath,
-                    "isCollection",
-                    is_required,
-                ));
-                let items = &a.items;
-                if items.is_none() {
-                    return (asserts, diagnostics);
+    match &schema.schema_kind {
+        openapiv3::SchemaKind::OneOf { .. } => {
+            diagnostics.push(HeaveError::UnsupportedRequestBodySchemaKind {
+                context: diagnostic_context.clone(),
+                kind: "OneOf".to_string(),
+                jsonpath: jsonpath.to_string(),
+            })
+        }
+        openapiv3::SchemaKind::AllOf { .. } => {
+            diagnostics.push(HeaveError::UnsupportedRequestBodySchemaKind {
+                context: diagnostic_context.clone(),
+                kind: "AllOf".to_string(),
+                jsonpath: jsonpath.to_string(),
+            })
+        }
+        openapiv3::SchemaKind::AnyOf { .. } => {
+            diagnostics.push(HeaveError::UnsupportedRequestBodySchemaKind {
+                context: diagnostic_context.clone(),
+                kind: "AnyOf".to_string(),
+                jsonpath: jsonpath.to_string(),
+            })
+        }
+        openapiv3::SchemaKind::Not { .. } => {
+            diagnostics.push(HeaveError::UnsupportedRequestBodySchemaKind {
+                context: diagnostic_context.clone(),
+                kind: "Not".to_string(),
+                jsonpath: jsonpath.to_string(),
+            })
+        }
+        openapiv3::SchemaKind::Any(_) => {
+            diagnostics.push(HeaveError::UnsupportedRequestBodySchemaKind {
+                context: diagnostic_context.clone(),
+                kind: "Any".to_string(),
+                jsonpath: jsonpath.to_string(),
+            })
+        }
+        openapiv3::SchemaKind::Type(schema_type) => {
+            match schema_type {
+                openapiv3::Type::Boolean(_) => {
+                    asserts.push(is_required_formatter(&jsonpath, "isBoolean", is_required))
                 }
-                let items = items.as_ref().unwrap();
-                let unboxed = items.clone().unbox();
-                let (inner, mut inner_diagnostics) =
-                    resolve_schema(openapi, &unboxed, &diagnostic_context);
-                diagnostics.append(&mut inner_diagnostics);
-                if inner.is_none() {
-                    return (asserts, diagnostics);
+                openapiv3::Type::String(_) => {
+                    asserts.push(is_required_formatter(&jsonpath, "isString", is_required))
                 }
-                let inner = inner.unwrap();
-
-                // Take the existing path and index the first element in the list.
-                let inner_jsonpath = format!("{}[0]", jsonpath);
-
-                // is_required is always false because a list may always be empty
-                let is_required = false;
-
-                let (mut child_asserts, mut child_diagnostics) = generate_assert_from_schema(
-                    openapi,
-                    inner,
-                    inner_jsonpath.as_ref(),
-                    is_required,
-                    diagnostic_context,
-                );
-                asserts.append(&mut child_asserts);
-                diagnostics.append(&mut child_diagnostics);
-            }
-            openapiv3::Type::Object(ob) => {
-                asserts.push(is_required_formatter(
-                    &jsonpath,
-                    "isCollection",
-                    is_required,
-                ));
-                let properties = &ob.properties;
-                for (name, prop) in properties.iter() {
-                    let unboxed = prop.clone().unbox();
+                openapiv3::Type::Number(_) => {
+                    asserts.push(is_required_formatter(&jsonpath, "isNumber", is_required))
+                }
+                openapiv3::Type::Integer(_) => {
+                    asserts.push(is_required_formatter(&jsonpath, "isInteger", is_required))
+                }
+                openapiv3::Type::Array(a) => {
+                    asserts.push(is_required_formatter(
+                        &jsonpath,
+                        "isCollection",
+                        is_required,
+                    ));
+                    let items = &a.items;
+                    if items.is_none() {
+                        return (asserts, diagnostics);
+                    }
+                    let items = items.as_ref().unwrap();
+                    let unboxed = items.clone().unbox();
                     let (inner, mut inner_diagnostics) =
-                        resolve_schema(openapi, &unboxed, diagnostic_context);
+                        resolve_schema(openapi, &unboxed, &diagnostic_context);
                     diagnostics.append(&mut inner_diagnostics);
                     if inner.is_none() {
-                        break;
+                        return (asserts, diagnostics);
                     }
                     let inner = inner.unwrap();
 
-                    // There are characters that aren't allowed in jsonpath so we change the format
-                    // if they're present.
-                    let inner_jsonpath = if name.chars().any(|c| c == '@' || c == '$') {
-                        format!("{}['{}']", jsonpath, name)
-                    } else {
-                        format!("{}.{}", jsonpath, name)
-                    };
-                    let child_is_required = is_required && ob.required.contains(name);
+                    // Take the existing path and index the first element in the list.
+                    let inner_jsonpath = format!("{}[0]", jsonpath);
+
+                    // is_required is always false because a list may always be empty
+                    let is_required = false;
+
                     let (mut child_asserts, mut child_diagnostics) = generate_assert_from_schema(
                         openapi,
                         inner,
                         inner_jsonpath.as_ref(),
-                        child_is_required,
+                        is_required,
                         diagnostic_context,
                     );
                     asserts.append(&mut child_asserts);
                     diagnostics.append(&mut child_diagnostics);
                 }
+                openapiv3::Type::Object(ob) => {
+                    asserts.push(is_required_formatter(
+                        &jsonpath,
+                        "isCollection",
+                        is_required,
+                    ));
+                    let properties = &ob.properties;
+                    for (name, prop) in properties.iter() {
+                        let unboxed = prop.clone().unbox();
+                        let (inner, mut inner_diagnostics) =
+                            resolve_schema(openapi, &unboxed, diagnostic_context);
+                        diagnostics.append(&mut inner_diagnostics);
+                        if inner.is_none() {
+                            break;
+                        }
+                        let inner = inner.unwrap();
+
+                        // There are characters that aren't allowed in jsonpath so we change the format
+                        // if they're present.
+                        let inner_jsonpath = if name.chars().any(|c| c == '@' || c == '$') {
+                            format!("{}['{}']", jsonpath, name)
+                        } else {
+                            format!("{}.{}", jsonpath, name)
+                        };
+                        let child_is_required = is_required && ob.required.contains(name);
+                        let (mut child_asserts, mut child_diagnostics) =
+                            generate_assert_from_schema(
+                                openapi,
+                                inner,
+                                inner_jsonpath.as_ref(),
+                                child_is_required,
+                                diagnostic_context,
+                            );
+                        asserts.append(&mut child_asserts);
+                        diagnostics.append(&mut child_diagnostics);
+                    }
+                }
             }
         }
-    } else {
-        println!("Only explicit types for responses are supported. Using AnyOf, Allof, etc. is not supported.");
     }
     (asserts, diagnostics)
 }
@@ -527,10 +591,10 @@ fn resolve_schema<'a>(
         ReferenceOr::Reference { reference } => {
             let schema_name = reference.split("#/components/schemas/").nth(1);
             if schema_name.is_none() {
-                diagnostics.push(HeaveError::MalformedSchemaReference(DiagnosticContext {
+                diagnostics.push(HeaveError::MalformedSchemaReference {
+                    context: diagnostic_context.clone(),
                     reference: reference.to_string(),
-                    ..diagnostic_context.clone()
-                }));
+                });
                 return (None, diagnostics);
             }
             let schema_name = schema_name.unwrap();
@@ -541,18 +605,18 @@ fn resolve_schema<'a>(
             }
             let found_schema = components.as_ref().unwrap().schemas.get(schema_name);
             if found_schema.is_none() {
-                diagnostics.push(HeaveError::MissingSchemaReference(DiagnosticContext {
+                diagnostics.push(HeaveError::MissingSchemaReference {
+                    context: diagnostic_context.clone(),
                     reference: reference.to_string(),
-                    ..diagnostic_context.clone()
-                }));
+                });
                 return (None, diagnostics);
             }
             let found_schema = found_schema.unwrap();
             if found_schema.as_item().is_none() {
-                diagnostics.push(HeaveError::FailedSchemaDereference(DiagnosticContext {
+                diagnostics.push(HeaveError::FailedSchemaDereference {
+                    context: diagnostic_context.clone(),
                     reference: reference.to_string(),
-                    ..diagnostic_context.clone()
-                }));
+                });
                 return (None, diagnostics);
             }
             let schema = found_schema.as_item().unwrap();
@@ -574,12 +638,10 @@ fn resolve_request_body<'a>(
         ReferenceOr::Reference { reference } => {
             let request_body_name = reference.split("#/components/requestBodies/").nth(1);
             if request_body_name.is_none() {
-                diagnostics.push(HeaveError::MalformedRequestBodyReference(
-                    DiagnosticContext {
-                        reference: reference.to_string(),
-                        ..diagnostic_context.clone()
-                    },
-                ));
+                diagnostics.push(HeaveError::MalformedRequestBodyReference {
+                    context: diagnostic_context.clone(),
+                    reference: reference.to_string(),
+                });
                 return (None, diagnostics);
             }
             let request_body_name = request_body_name.unwrap();
@@ -594,20 +656,18 @@ fn resolve_request_body<'a>(
                 .request_bodies
                 .get(request_body_name);
             if found_request_body.is_none() {
-                diagnostics.push(HeaveError::MissingRequestBodyReference(DiagnosticContext {
+                diagnostics.push(HeaveError::MissingRequestBodyReference {
+                    context: diagnostic_context.clone(),
                     reference: reference.to_string(),
-                    ..diagnostic_context.clone()
-                }));
+                });
                 return (None, diagnostics);
             }
             let found_request_body = found_request_body.unwrap();
             if found_request_body.as_item().is_none() {
-                diagnostics.push(HeaveError::FailedRequestBodyDereference(
-                    DiagnosticContext {
-                        reference: reference.to_string(),
-                        ..diagnostic_context.clone()
-                    },
-                ));
+                diagnostics.push(HeaveError::FailedRequestBodyDereference {
+                    context: diagnostic_context.clone(),
+                    reference: reference.to_string(),
+                });
                 return (None, diagnostics);
             }
             let request_body = found_request_body.as_item().unwrap();
@@ -623,31 +683,104 @@ fn generate_request_body_from_schema(
     diagnostic_context: &DiagnosticContext,
 ) -> (Option<String>, Vec<HeaveError>) {
     let mut diagnostics = vec![];
-    if let openapiv3::SchemaKind::Type(schema_type) = &schema.schema_kind {
-        // A small helper that takes properties that may or may not have names and formats them
-        // accordingly. If they have a name, start by indenting them, print the named property,
-        // then give it a default value. If there is no name, just print the default value.
-        let single_property_formatter = |name: Option<String>, default: &str| -> String {
-            match name {
-                Some(name) => format!("\"{}\": {}", name, default),
-                None => format!("{}", default),
-            }
-        };
-        return match schema_type {
-            openapiv3::Type::Boolean(_) => {
-                (Some(single_property_formatter(name, "false")), diagnostics)
-            }
-            openapiv3::Type::String(_) => {
-                (Some(single_property_formatter(name, "\"\"")), diagnostics)
-            }
-            openapiv3::Type::Number(_) | openapiv3::Type::Integer(_) => {
-                (Some(single_property_formatter(name, "0")), diagnostics)
-            }
-            openapiv3::Type::Object(ob) => {
-                let properties = &ob.properties;
-                let mut child_request_bodies: Vec<Option<String>> = vec![];
-                for (name, prop) in properties.iter() {
-                    let unboxed = prop.clone().unbox();
+    match &schema.schema_kind {
+        openapiv3::SchemaKind::OneOf { .. } => {
+            diagnostics.push(HeaveError::UnsupportedRequestBodySchemaKind {
+                context: diagnostic_context.clone(),
+                kind: "OneOf".to_string(),
+                jsonpath: name.unwrap_or("".to_string()),
+            })
+        }
+        openapiv3::SchemaKind::AllOf { .. } => {
+            diagnostics.push(HeaveError::UnsupportedRequestBodySchemaKind {
+                context: diagnostic_context.clone(),
+                kind: "AllOf".to_string(),
+                jsonpath: name.unwrap_or("".to_string()),
+            })
+        }
+        openapiv3::SchemaKind::AnyOf { .. } => {
+            diagnostics.push(HeaveError::UnsupportedRequestBodySchemaKind {
+                context: diagnostic_context.clone(),
+                kind: "AnyOf".to_string(),
+                jsonpath: name.unwrap_or("".to_string()),
+            })
+        }
+        openapiv3::SchemaKind::Not { .. } => {
+            diagnostics.push(HeaveError::UnsupportedRequestBodySchemaKind {
+                context: diagnostic_context.clone(),
+                kind: "Not".to_string(),
+                jsonpath: name.unwrap_or("".to_string()),
+            })
+        }
+        openapiv3::SchemaKind::Any(_) => {
+            diagnostics.push(HeaveError::UnsupportedRequestBodySchemaKind {
+                context: diagnostic_context.clone(),
+                kind: "Any".to_string(),
+                jsonpath: name.unwrap_or("".to_string()),
+            })
+        }
+        openapiv3::SchemaKind::Type(schema_type) => {
+            // A small helper that takes properties that may or may not have names and formats them
+            // accordingly. If they have a name, start by indenting them, print the named property,
+            // then give it a default value. If there is no name, just print the default value.
+            let single_property_formatter = |name: Option<String>, default: &str| -> String {
+                match name {
+                    Some(name) => format!("\"{}\": {}", name, default),
+                    None => format!("{}", default),
+                }
+            };
+            return match schema_type {
+                openapiv3::Type::Boolean(_) => {
+                    (Some(single_property_formatter(name, "false")), diagnostics)
+                }
+                openapiv3::Type::String(_) => {
+                    (Some(single_property_formatter(name, "\"\"")), diagnostics)
+                }
+                openapiv3::Type::Number(_) | openapiv3::Type::Integer(_) => {
+                    (Some(single_property_formatter(name, "0")), diagnostics)
+                }
+                openapiv3::Type::Object(ob) => {
+                    let properties = &ob.properties;
+                    let mut child_request_bodies: Vec<Option<String>> = vec![];
+                    for (name, prop) in properties.iter() {
+                        let unboxed = prop.clone().unbox();
+                        let (inner, mut inner_diagnostics) =
+                            resolve_schema(&openapi, &unboxed, diagnostic_context);
+                        diagnostics.append(&mut inner_diagnostics);
+                        if inner.is_none() {
+                            return (None, diagnostics);
+                        }
+                        let inner = inner.unwrap();
+                        let (request_body, mut inner_diagnostics) =
+                            generate_request_body_from_schema(
+                                &openapi,
+                                &inner,
+                                Some(name.to_string()),
+                                diagnostic_context,
+                            );
+                        child_request_bodies.push(request_body);
+                        diagnostics.append(&mut inner_diagnostics);
+                    }
+                    let stringified_body = child_request_bodies
+                        .into_iter()
+                        .filter_map(|body| body)
+                        .collect::<Vec<String>>()
+                        .join(",\n");
+                    return match name {
+                        Some(name) => (
+                            Some(format!("\"{}\": {{{}}}", name, stringified_body)),
+                            diagnostics,
+                        ),
+                        None => (Some(format!("{{\n{}\n}}", stringified_body,)), diagnostics),
+                    };
+                }
+                openapiv3::Type::Array(array) => {
+                    let items = &array.items;
+                    if items.is_none() {
+                        return (None, diagnostics);
+                    }
+                    let items = items.as_ref().unwrap();
+                    let unboxed = items.clone().unbox();
                     let (inner, mut inner_diagnostics) =
                         resolve_schema(&openapi, &unboxed, diagnostic_context);
                     diagnostics.append(&mut inner_diagnostics);
@@ -655,60 +788,28 @@ fn generate_request_body_from_schema(
                         return (None, diagnostics);
                     }
                     let inner = inner.unwrap();
-                    let (request_body, mut inner_diagnostics) = generate_request_body_from_schema(
-                        &openapi,
-                        &inner,
-                        Some(name.to_string()),
-                        diagnostic_context,
-                    );
-                    child_request_bodies.push(request_body);
-                    diagnostics.append(&mut inner_diagnostics);
+                    let (child_request_body, mut child_diagnostics) =
+                        generate_request_body_from_schema(
+                            &openapi,
+                            &inner,
+                            None,
+                            diagnostic_context,
+                        );
+                    diagnostics.append(&mut child_diagnostics);
+                    if child_request_body.is_none() {
+                        return (None, diagnostics);
+                    }
+                    let child_request_body = child_request_body.unwrap();
+                    match name {
+                        Some(name) => (
+                            Some(format!("\"{}\": [{}]", name, child_request_body,)),
+                            diagnostics,
+                        ),
+                        None => (Some(format!("[{}]", child_request_body)), diagnostics),
+                    }
                 }
-                let stringified_body = child_request_bodies
-                    .into_iter()
-                    .filter_map(|body| body)
-                    .collect::<Vec<String>>()
-                    .join(",\n");
-                return match name {
-                    Some(name) => (
-                        Some(format!("\"{}\": {{{}}}", name, stringified_body)),
-                        diagnostics,
-                    ),
-                    None => (Some(format!("{{\n{}\n}}", stringified_body,)), diagnostics),
-                };
-            }
-            openapiv3::Type::Array(array) => {
-                let items = &array.items;
-                if items.is_none() {
-                    return (None, diagnostics);
-                }
-                let items = items.as_ref().unwrap();
-                let unboxed = items.clone().unbox();
-                let (inner, mut inner_diagnostics) =
-                    resolve_schema(&openapi, &unboxed, diagnostic_context);
-                diagnostics.append(&mut inner_diagnostics);
-                if inner.is_none() {
-                    return (None, diagnostics);
-                }
-                let inner = inner.unwrap();
-                let (child_request_body, mut child_diagnostics) =
-                    generate_request_body_from_schema(&openapi, &inner, None, diagnostic_context);
-                diagnostics.append(&mut child_diagnostics);
-                if child_request_body.is_none() {
-                    return (None, diagnostics);
-                }
-                let child_request_body = child_request_body.unwrap();
-                match name {
-                    Some(name) => (
-                        Some(format!("\"{}\": [{}]", name, child_request_body,)),
-                        diagnostics,
-                    ),
-                    None => (Some(format!("[{}]", child_request_body)), diagnostics),
-                }
-            }
-        };
-    } else {
-        println!("Only explicit types for responses are supported. Using AnyOf, Allof, etc. is not supported.");
+            };
+        }
     }
     (None, diagnostics)
 }
