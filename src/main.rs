@@ -77,31 +77,63 @@ pub enum HeaveError {
         source: minijinja::Error,
     },
     #[error(
-        "Parameter references must be start with `#/components/parameters/`. Path: `{path}`, Operation: `{operation}`, Reference: `{reference}`."
+        r#"
+---------------------------
+MalformedParameterReference
+
+Message: Parameter references must be start with `#/components/parameters/`.
+Path: {path}
+Operation: {operation}
+Reference: {reference}"#
     )]
     MalformedParameterReference {
         operation: String,
         path: String,
         reference: String,
     },
-    #[error("Missing Components definition from schema. Please define a top-level `components` key in your spec.")]
+    #[error(r#"
+-----------------
+MissingComponents
+
+Message: Missing Components definition from schema. Please define a top-level `components` key in your spec."#)]
     MissingComponents,
     #[error(
-        "Failed to find parameter reference. Path: `{}`, Operation: `{}`, Reference: `{}`.", .context.path, .context.operation, .reference
+        r#"
+-------------------------
+MissingParameterReference
+
+Message: Failed to find parameter reference.
+Path: {}
+Operation: {}
+Reference: {}"#, .context.path, .context.operation, .reference
     )]
     MissingParameterReference {
         context: DiagnosticContext,
         reference: String,
     },
     #[error(
-        "RequestBody references must be start with `#/components/requestBodies/`. Path: `{}`, Operation: `{}`, Reference: `{}`.", .context.path, .context.operation, .reference
+        r#"
+-----------------------------
+MalformedRequestBodyReference
+
+Message: RequestBody references must be start with `#/components/requestBodies/`.
+Path: {}
+Operation: {}
+Reference: {}"#, .context.path, .context.operation, .reference
     )]
     MalformedRequestBodyReference {
         context: DiagnosticContext,
         reference: String,
     },
     #[error(
-        "Failed to find RequestBody reference. Path: `{}`, Operation: `{}`, Reference: `{}`.", .context.path, .context.operation, .reference
+        r#"
+---------------------------
+MissingRequestBodyReference
+
+Message: Failed to find RequestBody reference.
+Path: {}
+Operation: {}
+Reference: {}"#, .context.path, .context.operation, .reference
     )]
     MissingRequestBodyReference {
         context: DiagnosticContext,
@@ -109,29 +141,62 @@ pub enum HeaveError {
     },
     // TODO maybe this should be allowed?
     #[error(
-        "RequestBodies defined in `#/components/requestBodies/` must not contain references. Path: `{}`, Operation: `{}`, Reference: `{}`.", .context.path, .context.operation, .reference
+        r#"
+----------------------------
+FailedRequestBodyDereference
+
+Message: RequestBodies defined in `#/components/requestBodies/` must not contain references.
+Path: {}
+Operation: {}
+Reference: {}"#, .context.path, .context.operation, .reference
     )]
     FailedRequestBodyDereference {
         context: DiagnosticContext,
         reference: String,
     },
     #[error(
-        "Missing application/json MediaType for RequestBody. Path: `{}`, Operation: `{}`.", .context.path, .context.operation,
+        r#"
+------------------------------------------
+MissingApplicationJsonRequestBodyMediaType
+
+Message: Missing application/json MediaType for RequestBody.
+Path: {}
+Operation: {}"#, .context.path, .context.operation,
     )]
     MissingApplicationJsonRequestBodyMediaType { context: DiagnosticContext },
     #[error(
-        "Missing Schema definition for MediaType. Path: `{}`, Operation: `{}`.", .context.path, .context.operation,
+        r#"
+-----------------------------------
+MissingSchemaDefinitionForMediaType
+
+Message: Missing Schema definition for MediaType.
+Path: {}
+Operation: {}"#, .context.path, .context.operation,
     )]
     MissingSchemaDefinitionForMediaType { context: DiagnosticContext },
     #[error(
-        "Schema references must be start with `#/components/schemas/`. Path: `{}`, Operation: `{}`, Reference: `{}`.", .context.path, .context.operation, .reference
+        r#"
+------------------------
+MalformedSchemaReference
+
+Message: Schema references must be start with `#/components/schemas/`.
+Path: {}
+Operation: {}
+Reference: {}"#, .context.path, .context.operation, .reference
     )]
     MalformedSchemaReference {
         context: DiagnosticContext,
         reference: String,
     },
     #[error(
-        "Failed to find Schema reference. Path: `{}`, Operation: `{}`, Reference: `{}`.", .context.path, .context.operation, .reference
+        r#"
+----------------------
+MissingSchemaReference
+
+Message: Failed to find Schema reference.
+Path: {}
+Operation: {}
+Reference: {}"#, .context.path, .context.operation, .reference
     )]
     MissingSchemaReference {
         context: DiagnosticContext,
@@ -139,7 +204,14 @@ pub enum HeaveError {
     },
     // TODO maybe this should be allowed?
     #[error(
-        "Schemas defined in `#/components/schemas/` must not contain references. Path: `{}`, Operation: `{}`, Reference: `{}`.", .context.path, .context.operation, .reference
+        r#"
+-----------------------
+FailedSchemaDereference
+
+Message: Schemas defined in `#/components/schemas/` must not contain references.
+Path: {}
+Operation: {}
+Reference: {}"#, .context.path, .context.operation, .reference
     )]
     FailedSchemaDereference {
         context: DiagnosticContext,
