@@ -222,7 +222,7 @@ Reference: {}"#, .context.path, .context.operation, .reference
 -------------------------------------------
 UnsupportedRequestBodySchemaKindUnsupported
 
-Message: RequestBody Schema kind. Using AllOf, AnyOf, etc. is currently not supported.
+Message: Using AllOf, AnyOf, etc. in Request Bodies is currently not supported.
 Path: {}
 Operation: {}
 Detected Kind: {}
@@ -233,6 +233,60 @@ JSON path: {}"#,
         context: DiagnosticContext,
         kind: String,
         jsonpath: String,
+    },
+    #[error(
+        r#"
+--------------------------
+UnsupportedStatusCodeRange
+
+Message: Using ranges for HTTP status codes is currently not supported.
+Path: {}
+Operation: {}"#,
+.context.path, .context.operation,
+    )]
+    UnsupportedStatusCodeRange { context: DiagnosticContext },
+    #[error(
+        r#"
+------------------------------
+MalformedResponseBodyReference
+
+Message: Response references must be start with `#/components/responses/`.
+Path: {}
+Operation: {}
+Reference: {}"#, .context.path, .context.operation, .reference
+    )]
+    MalformedResponseBodyReference {
+        context: DiagnosticContext,
+        reference: String,
+    },
+    #[error(
+        r#"
+----------------------------
+MissingResponseBodyReference
+
+Message: Failed to find Response reference.
+Path: {}
+Operation: {}
+Reference: {}"#, .context.path, .context.operation, .reference
+    )]
+    MissingResponseBodyReference {
+        context: DiagnosticContext,
+        reference: String,
+    },
+    // TODO maybe this should be allowed?
+    #[error(
+        r#"
+-----------------------------
+FailedResponseBodyDereference
+
+Message: Schemas defined in `#/components/responses/` must not contain references.
+Path: {}
+Operation: {}
+Reference: {}"#, .context.path, .context.operation, .reference
+    )]
+    FailedResponseBodyDereference {
+        context: DiagnosticContext,
+        reference: String,
     },
 }
 
@@ -426,11 +480,15 @@ fn generate(
             let mut asserts: Vec<String> = vec![];
             match status_code {
                 openapiv3::StatusCode::Range(_) => {
-                    println!("Using ranges for status codes is not supported for responses.");
+                    diagnostics.push(HeaveError::UnsupportedStatusCodeRange {
+                        context: context.clone(),
+                    })
                 }
                 openapiv3::StatusCode::Code(code) => {
                     let name = format!("{}_{}.hurl", name, code);
-                    let response = resolve_response(&openapi, response);
+                    let (response, mut inner_diagnostics) =
+                        resolve_response(&openapi, response, &context);
+                    diagnostics.append(&mut inner_diagnostics);
                     if response.is_none() {
                         continue;
                     }
@@ -443,10 +501,16 @@ fn generate(
                         }
                     }
                     if media_type.is_none() {
+                        diagnostics.push(HeaveError::MissingApplicationJsonRequestBodyMediaType {
+                            context: context.clone(),
+                        });
                         continue;
                     }
                     let schema = media_type.unwrap().schema.as_ref();
                     if schema.is_none() {
+                        diagnostics.push(HeaveError::MissingSchemaDefinitionForMediaType {
+                            context: context.clone(),
+                        });
                         continue;
                     }
                     let schema = schema.unwrap();
@@ -889,31 +953,46 @@ fn generate_request_body_from_schema(
 fn resolve_response<'a>(
     openapi: &'a openapiv3::OpenAPI,
     response: &'a openapiv3::ReferenceOr<openapiv3::Response>,
-) -> Option<&'a openapiv3::Response> {
+    diagnostic_context: &DiagnosticContext,
+) -> (Option<&'a openapiv3::Response>, Vec<HeaveError>) {
+    let mut diagnostics = vec![];
     match response {
         ReferenceOr::Item(item) => {
-            return Some(item);
+            return (Some(item), diagnostics);
         }
         ReferenceOr::Reference { reference } => {
             let response_name = reference.split("#/components/responses/").nth(1);
             if response_name.is_none() {
-                return None;
+                diagnostics.push(HeaveError::MalformedResponseBodyReference {
+                    context: diagnostic_context.clone(),
+                    reference: reference.to_string(),
+                });
+                return (None, diagnostics);
             }
             let response_name = response_name.unwrap();
             let components = &openapi.components;
             if components.is_none() {
-                return None;
+                diagnostics.push(HeaveError::MissingComponents);
+                return (None, diagnostics);
             }
             let found_response = components.as_ref().unwrap().responses.get(response_name);
             if found_response.is_none() {
-                return None;
+                diagnostics.push(HeaveError::MissingResponseBodyReference {
+                    context: diagnostic_context.clone(),
+                    reference: reference.to_string(),
+                });
+                return (None, diagnostics);
             }
             let found_response = found_response.unwrap();
             if found_response.as_item().is_none() {
-                return None;
+                diagnostics.push(HeaveError::FailedResponseBodyDereference {
+                    context: diagnostic_context.clone(),
+                    reference: reference.to_string(),
+                });
+                return (None, diagnostics);
             }
             let schema = found_response.as_item().unwrap();
-            Some(schema)
+            (Some(schema), diagnostics)
         }
     }
 }
