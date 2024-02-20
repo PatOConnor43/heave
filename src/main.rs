@@ -1,7 +1,7 @@
 use clap::{Args, Parser, Subcommand};
 use minijinja::{context, Environment};
 use openapiv3::{MediaType, OpenAPI, ReferenceOr};
-use std::{error::Error, ops::Deref, path::PathBuf};
+use std::{error::Error, path::PathBuf};
 
 /// Program to generate hurl files from openapi schemas
 #[derive(Parser, Debug)]
@@ -308,8 +308,11 @@ fn generate(
                 break;
             }
             let schema = schema.unwrap();
-            request_body_parameter =
+            let request_body_parameter_tuple =
                 generate_request_body_from_schema(&openapi, &schema, None, &context);
+            request_body_parameter = request_body_parameter_tuple.0;
+            let mut inner_diagnostics = request_body_parameter_tuple.1;
+            diagnostics.append(&mut inner_diagnostics);
             if let Some(body) = &request_body_parameter {
                 let a = serde_json::from_str::<serde_json::Value>(body).unwrap();
                 let body = serde_json::to_string_pretty(&a);
@@ -355,9 +358,10 @@ fn generate(
                     }
                     let schema = schema.unwrap();
                     let is_required = true;
-                    let mut new_asserts =
+                    let (mut new_asserts, mut new_diagnostics) =
                         generate_assert_from_schema(&openapi, schema, "$", is_required, &context);
                     asserts.append(&mut new_asserts);
+                    diagnostics.append(&mut new_diagnostics);
 
                     let output = Output {
                         expected_status_code: *code,
@@ -406,8 +410,9 @@ fn generate_assert_from_schema(
     jsonpath: &str,
     is_required: bool,
     diagnostic_context: &DiagnosticContext,
-) -> Vec<String> {
+) -> (Vec<String>, Vec<HeaveError>) {
     let mut asserts = vec![];
+    let mut diagnostics = vec![];
     let is_required_formatter = |jsonpath: &str, default: &str, is_required: bool| -> String {
         format!(
             "{}jsonpath \"{}\" {}",
@@ -438,14 +443,15 @@ fn generate_assert_from_schema(
                 ));
                 let items = &a.items;
                 if items.is_none() {
-                    return asserts;
+                    return (asserts, diagnostics);
                 }
                 let items = items.as_ref().unwrap();
                 let unboxed = items.clone().unbox();
-                let (inner, inner_diagnostics) =
+                let (inner, mut inner_diagnostics) =
                     resolve_schema(openapi, &unboxed, &diagnostic_context);
+                diagnostics.append(&mut inner_diagnostics);
                 if inner.is_none() {
-                    return asserts;
+                    return (asserts, diagnostics);
                 }
                 let inner = inner.unwrap();
 
@@ -455,7 +461,7 @@ fn generate_assert_from_schema(
                 // is_required is always false because a list may always be empty
                 let is_required = false;
 
-                let mut child_asserts = generate_assert_from_schema(
+                let (mut child_asserts, mut child_diagnostics) = generate_assert_from_schema(
                     openapi,
                     inner,
                     inner_jsonpath.as_ref(),
@@ -463,6 +469,7 @@ fn generate_assert_from_schema(
                     diagnostic_context,
                 );
                 asserts.append(&mut child_asserts);
+                diagnostics.append(&mut child_diagnostics);
             }
             openapiv3::Type::Object(ob) => {
                 asserts.push(is_required_formatter(
@@ -473,8 +480,9 @@ fn generate_assert_from_schema(
                 let properties = &ob.properties;
                 for (name, prop) in properties.iter() {
                     let unboxed = prop.clone().unbox();
-                    let (inner, inner_diagnostics) =
+                    let (inner, mut inner_diagnostics) =
                         resolve_schema(openapi, &unboxed, diagnostic_context);
+                    diagnostics.append(&mut inner_diagnostics);
                     if inner.is_none() {
                         break;
                     }
@@ -488,7 +496,7 @@ fn generate_assert_from_schema(
                         format!("{}.{}", jsonpath, name)
                     };
                     let child_is_required = is_required && ob.required.contains(name);
-                    let mut child_asserts = generate_assert_from_schema(
+                    let (mut child_asserts, mut child_diagnostics) = generate_assert_from_schema(
                         openapi,
                         inner,
                         inner_jsonpath.as_ref(),
@@ -496,13 +504,14 @@ fn generate_assert_from_schema(
                         diagnostic_context,
                     );
                     asserts.append(&mut child_asserts);
+                    diagnostics.append(&mut child_diagnostics);
                 }
             }
         }
     } else {
         println!("Only explicit types for responses are supported. Using AnyOf, Allof, etc. is not supported.");
     }
-    asserts
+    (asserts, diagnostics)
 }
 
 fn resolve_schema<'a>(
@@ -612,7 +621,8 @@ fn generate_request_body_from_schema(
     schema: &openapiv3::Schema,
     name: Option<String>,
     diagnostic_context: &DiagnosticContext,
-) -> Option<String> {
+) -> (Option<String>, Vec<HeaveError>) {
+    let mut diagnostics = vec![];
     if let openapiv3::SchemaKind::Type(schema_type) = &schema.schema_kind {
         // A small helper that takes properties that may or may not have names and formats them
         // accordingly. If they have a name, start by indenting them, print the named property,
@@ -624,29 +634,35 @@ fn generate_request_body_from_schema(
             }
         };
         return match schema_type {
-            openapiv3::Type::Boolean(_) => Some(single_property_formatter(name, "false")),
-            openapiv3::Type::String(_) => Some(single_property_formatter(name, "\"\"")),
+            openapiv3::Type::Boolean(_) => {
+                (Some(single_property_formatter(name, "false")), diagnostics)
+            }
+            openapiv3::Type::String(_) => {
+                (Some(single_property_formatter(name, "\"\"")), diagnostics)
+            }
             openapiv3::Type::Number(_) | openapiv3::Type::Integer(_) => {
-                Some(single_property_formatter(name, "0"))
+                (Some(single_property_formatter(name, "0")), diagnostics)
             }
             openapiv3::Type::Object(ob) => {
                 let properties = &ob.properties;
                 let mut child_request_bodies: Vec<Option<String>> = vec![];
                 for (name, prop) in properties.iter() {
                     let unboxed = prop.clone().unbox();
-                    let (inner, inner_diagnostics) =
+                    let (inner, mut inner_diagnostics) =
                         resolve_schema(&openapi, &unboxed, diagnostic_context);
+                    diagnostics.append(&mut inner_diagnostics);
                     if inner.is_none() {
-                        return None;
+                        return (None, diagnostics);
                     }
                     let inner = inner.unwrap();
-                    let request_body = generate_request_body_from_schema(
+                    let (request_body, mut inner_diagnostics) = generate_request_body_from_schema(
                         &openapi,
                         &inner,
                         Some(name.to_string()),
                         diagnostic_context,
                     );
                     child_request_bodies.push(request_body);
+                    diagnostics.append(&mut inner_diagnostics);
                 }
                 let stringified_body = child_request_bodies
                     .into_iter()
@@ -654,39 +670,47 @@ fn generate_request_body_from_schema(
                     .collect::<Vec<String>>()
                     .join(",\n");
                 return match name {
-                    Some(name) => Some(format!("\"{}\": {{{}}}", name, stringified_body)),
-                    None => Some(format!("{{\n{}\n}}", stringified_body,)),
+                    Some(name) => (
+                        Some(format!("\"{}\": {{{}}}", name, stringified_body)),
+                        diagnostics,
+                    ),
+                    None => (Some(format!("{{\n{}\n}}", stringified_body,)), diagnostics),
                 };
             }
             openapiv3::Type::Array(array) => {
                 let items = &array.items;
                 if items.is_none() {
-                    return None;
+                    return (None, diagnostics);
                 }
                 let items = items.as_ref().unwrap();
                 let unboxed = items.clone().unbox();
-                let (inner, inner_diagnostics) =
+                let (inner, mut inner_diagnostics) =
                     resolve_schema(&openapi, &unboxed, diagnostic_context);
+                diagnostics.append(&mut inner_diagnostics);
                 if inner.is_none() {
-                    return None;
+                    return (None, diagnostics);
                 }
                 let inner = inner.unwrap();
-                let child_request_body =
+                let (child_request_body, mut child_diagnostics) =
                     generate_request_body_from_schema(&openapi, &inner, None, diagnostic_context);
+                diagnostics.append(&mut child_diagnostics);
                 if child_request_body.is_none() {
-                    return None;
+                    return (None, diagnostics);
                 }
                 let child_request_body = child_request_body.unwrap();
                 match name {
-                    Some(name) => Some(format!("\"{}\": [{}]", name, child_request_body,)),
-                    None => Some(format!("[{}]", child_request_body)),
+                    Some(name) => (
+                        Some(format!("\"{}\": [{}]", name, child_request_body,)),
+                        diagnostics,
+                    ),
+                    None => (Some(format!("[{}]", child_request_body)), diagnostics),
                 }
             }
         };
     } else {
         println!("Only explicit types for responses are supported. Using AnyOf, Allof, etc. is not supported.");
     }
-    None
+    (None, diagnostics)
 }
 
 fn resolve_response<'a>(
