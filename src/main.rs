@@ -308,7 +308,8 @@ fn generate(
                 break;
             }
             let schema = schema.unwrap();
-            request_body_parameter = generate_request_body_from_schema(&openapi, &schema, None);
+            request_body_parameter =
+                generate_request_body_from_schema(&openapi, &schema, None, &context);
             if let Some(body) = &request_body_parameter {
                 let a = serde_json::from_str::<serde_json::Value>(body).unwrap();
                 let body = serde_json::to_string_pretty(&a);
@@ -355,7 +356,7 @@ fn generate(
                     let schema = schema.unwrap();
                     let is_required = true;
                     let mut new_asserts =
-                        generate_assert_from_schema(&openapi, schema, "$", is_required);
+                        generate_assert_from_schema(&openapi, schema, "$", is_required, &context);
                     asserts.append(&mut new_asserts);
 
                     let output = Output {
@@ -404,6 +405,7 @@ fn generate_assert_from_schema(
     schema: &openapiv3::Schema,
     jsonpath: &str,
     is_required: bool,
+    diagnostic_context: &DiagnosticContext,
 ) -> Vec<String> {
     let mut asserts = vec![];
     let is_required_formatter = |jsonpath: &str, default: &str, is_required: bool| -> String {
@@ -439,7 +441,9 @@ fn generate_assert_from_schema(
                     return asserts;
                 }
                 let items = items.as_ref().unwrap();
-                let inner = resolve_schema_box(openapi, &items);
+                let unboxed = items.clone().unbox();
+                let (inner, inner_diagnostics) =
+                    resolve_schema(openapi, &unboxed, &diagnostic_context);
                 if inner.is_none() {
                     return asserts;
                 }
@@ -456,6 +460,7 @@ fn generate_assert_from_schema(
                     inner,
                     inner_jsonpath.as_ref(),
                     is_required,
+                    diagnostic_context,
                 );
                 asserts.append(&mut child_asserts);
             }
@@ -467,7 +472,9 @@ fn generate_assert_from_schema(
                 ));
                 let properties = &ob.properties;
                 for (name, prop) in properties.iter() {
-                    let inner = resolve_schema_box(openapi, prop);
+                    let unboxed = prop.clone().unbox();
+                    let (inner, inner_diagnostics) =
+                        resolve_schema(openapi, &unboxed, diagnostic_context);
                     if inner.is_none() {
                         break;
                     }
@@ -486,6 +493,7 @@ fn generate_assert_from_schema(
                         inner,
                         inner_jsonpath.as_ref(),
                         child_is_required,
+                        diagnostic_context,
                     );
                     asserts.append(&mut child_asserts);
                 }
@@ -495,38 +503,6 @@ fn generate_assert_from_schema(
         println!("Only explicit types for responses are supported. Using AnyOf, Allof, etc. is not supported.");
     }
     asserts
-}
-
-fn resolve_schema_box<'a>(
-    openapi: &'a openapiv3::OpenAPI,
-    schema: &'a openapiv3::ReferenceOr<Box<openapiv3::Schema>>,
-) -> Option<&'a openapiv3::Schema> {
-    match schema {
-        ReferenceOr::Item(item) => {
-            return Some(item.deref());
-        }
-        ReferenceOr::Reference { reference } => {
-            let schema_name = reference.split("#/components/schemas/").nth(1);
-            if schema_name.is_none() {
-                return None;
-            }
-            let schema_name = schema_name.unwrap();
-            let components = &openapi.components;
-            if components.is_none() {
-                return None;
-            }
-            let found_schema = components.as_ref().unwrap().schemas.get(schema_name);
-            if found_schema.is_none() {
-                return None;
-            }
-            let found_schema = found_schema.unwrap();
-            if found_schema.as_item().is_none() {
-                return None;
-            }
-            let schema = found_schema.as_item().unwrap();
-            Some(schema)
-        }
-    }
 }
 
 fn resolve_schema<'a>(
@@ -635,6 +611,7 @@ fn generate_request_body_from_schema(
     openapi: &openapiv3::OpenAPI,
     schema: &openapiv3::Schema,
     name: Option<String>,
+    diagnostic_context: &DiagnosticContext,
 ) -> Option<String> {
     if let openapiv3::SchemaKind::Type(schema_type) = &schema.schema_kind {
         // A small helper that takes properties that may or may not have names and formats them
@@ -656,13 +633,19 @@ fn generate_request_body_from_schema(
                 let properties = &ob.properties;
                 let mut child_request_bodies: Vec<Option<String>> = vec![];
                 for (name, prop) in properties.iter() {
-                    let inner = resolve_schema_box(&openapi, &prop);
+                    let unboxed = prop.clone().unbox();
+                    let (inner, inner_diagnostics) =
+                        resolve_schema(&openapi, &unboxed, diagnostic_context);
                     if inner.is_none() {
                         return None;
                     }
                     let inner = inner.unwrap();
-                    let request_body =
-                        generate_request_body_from_schema(&openapi, &inner, Some(name.to_string()));
+                    let request_body = generate_request_body_from_schema(
+                        &openapi,
+                        &inner,
+                        Some(name.to_string()),
+                        diagnostic_context,
+                    );
                     child_request_bodies.push(request_body);
                 }
                 let stringified_body = child_request_bodies
@@ -681,12 +664,15 @@ fn generate_request_body_from_schema(
                     return None;
                 }
                 let items = items.as_ref().unwrap();
-                let inner = resolve_schema_box(&openapi, &items);
+                let unboxed = items.clone().unbox();
+                let (inner, inner_diagnostics) =
+                    resolve_schema(&openapi, &unboxed, diagnostic_context);
                 if inner.is_none() {
                     return None;
                 }
                 let inner = inner.unwrap();
-                let child_request_body = generate_request_body_from_schema(&openapi, &inner, None);
+                let child_request_body =
+                    generate_request_body_from_schema(&openapi, &inner, None, diagnostic_context);
                 if child_request_body.is_none() {
                     return None;
                 }
