@@ -471,7 +471,7 @@ fn generate(openapi: openapiv3::OpenAPI) -> GenerateResult {
             }
         }
 
-        if let Some(request_body) = &operation.request_body {
+        while let Some(request_body) = &operation.request_body {
             let (request_body, mut inner_diagnostics) =
                 resolve_request_body(&openapi, &request_body, &context);
             diagnostics.append(&mut inner_diagnostics);
@@ -487,14 +487,17 @@ fn generate(openapi: openapiv3::OpenAPI) -> GenerateResult {
                 }
             }
             if media_type.is_none() {
-                diagnostics
-                    .push(HeaveError::MissingApplicationJsonRequestBodyMediaType { context });
+                diagnostics.push(HeaveError::MissingApplicationJsonRequestBodyMediaType {
+                    context: context.clone(),
+                });
                 break;
             }
             let media_type = media_type.unwrap();
             let schema = &media_type.schema;
             if schema.is_none() {
-                diagnostics.push(HeaveError::MissingSchemaDefinitionForMediaType { context });
+                diagnostics.push(HeaveError::MissingSchemaDefinitionForMediaType {
+                    context: context.clone(),
+                });
                 break;
             }
             let schema = schema.as_ref().unwrap();
@@ -516,6 +519,7 @@ fn generate(openapi: openapiv3::OpenAPI) -> GenerateResult {
                     request_body_parameter = Some(body);
                 }
             };
+            break;
         }
 
         for (status_code, response) in operation.responses.responses.iter() {

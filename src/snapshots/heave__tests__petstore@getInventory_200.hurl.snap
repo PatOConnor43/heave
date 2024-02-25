@@ -1,0 +1,13 @@
+---
+source: src/main.rs
+input_file: src/snapshots/petstore/getInventory_200.hurl
+---
+GET {{ baseurl }}/store/inventory
+Authorization: Bearer {{ authorization }}
+Prefer: code=200
+
+HTTP 200
+
+[Asserts]
+jsonpath "$" isCollection
+
