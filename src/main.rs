@@ -38,6 +38,7 @@ struct GenerateArgs {
 ///
 /// Each field defined in this struct will be available to the template. The template uses the
 /// minijinja syntax.
+#[derive(Debug)]
 pub struct Output {
     pub expected_status_code: u16,
     pub name: String,
@@ -49,6 +50,7 @@ pub struct Output {
     pub request_body_parameter: String,
 }
 
+#[derive(Debug)]
 pub struct GenerateResult {
     outputs: Vec<Output>,
     diagnostics: Vec<HeaveError>,
@@ -359,7 +361,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let result = generate(openapi);
             write_outputs(&result.outputs, &template, &output_directory)?;
 
-            //diagnostics.iter().for_each(|d| println!("{}", d));
+            result.diagnostics.iter().for_each(|d| println!("{}", d));
 
             Ok(())
         }
@@ -1030,10 +1032,17 @@ fn resolve_response<'a>(
 mod tests {
     use std::{error::Error, path::PathBuf, str::FromStr};
 
-    use insta::{assert_snapshot, glob};
+    use insta::{assert_debug_snapshot, assert_snapshot, glob};
     use openapiv3::OpenAPI;
 
     use crate::{generate, write_outputs, DEFAULT_HURL_TEMPLATE};
+
+    // Creates an OpenAPI from a file path
+    macro_rules! openapi_from_yaml {
+        ($fname:expr) => {
+            serde_yaml::from_str(&std::fs::read_to_string($fname).unwrap()).unwrap()
+        };
+    }
 
     #[test]
     fn petstore() -> Result<(), Box<dyn Error>> {
@@ -1073,13 +1082,17 @@ mod tests {
         Ok(())
     }
 
-    //#[test]
-    //fn diagnostic_MalformedParameterReference() -> Result<(), Box<dyn Error>> {
-    //    let input = std::fs::read_to_string("snapshots/petstore/MalformedParameterReference.yaml")?;
-    //    let openapi: OpenAPI = serde_json::from_str(&input)?;
-    //    let output_directory = PathBuf::from_str("src/snapshots/diagnostics");
-    //    let result = generate(openapi);
-    //    write_outputs(&result.outputs, DEFAULT_HURL_TEMPLATE, &output_directory)?;
-    //    Ok(())
-    //}
+    #[test]
+    fn diagnostic_inputs() -> Result<(), Box<dyn Error>> {
+        let mut settings = insta::Settings::clone_current();
+        settings.set_omit_expression(true);
+        settings.bind(|| {
+            glob!("snapshots/diagnostics/*.yaml", |path| {
+                let input: OpenAPI = openapi_from_yaml!(&path);
+                let result = generate(input);
+                assert_debug_snapshot!(result);
+            });
+        });
+        Ok(())
+    }
 }
