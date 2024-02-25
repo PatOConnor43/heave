@@ -186,7 +186,7 @@ fn generate(
             }
         }
 
-        if let Some(request_body) = &operation.request_body {
+        while let Some(request_body) = &operation.request_body {
             let request_body = resolve_request_body(&openapi, &request_body);
             if request_body.is_none() {
                 break;
@@ -221,6 +221,7 @@ fn generate(
                     request_body_parameter = Some(body);
                 }
             };
+            break;
         }
 
         for (status_code, response) in operation.responses.responses.iter() {
