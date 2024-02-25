@@ -227,16 +227,16 @@ Reference: {}"#, .context.path, .context.operation, .reference
     #[error(
         r#"
 -------------------------------------------
-UnsupportedRequestBodySchemaKind
+UnsupportedSchemaKind
 
-Message: Using AllOf, AnyOf, etc. in Request Bodies is currently not supported.
+Message: Generation based on schemas using AnyOf, AllOf, etc. is currently not supported.
 Path: {}
 Operation: {}
 Detected Kind: {}
 JSON path: {}"#,
 .context.path, .context.operation, .kind, .jsonpath
     )]
-    UnsupportedRequestBodySchemaKind {
+    UnsupportedSchemaKind {
         context: DiagnosticContext,
         kind: String,
         jsonpath: String,
@@ -618,40 +618,36 @@ fn generate_assert_from_schema(
     };
     match &schema.schema_kind {
         openapiv3::SchemaKind::OneOf { .. } => {
-            diagnostics.push(HeaveError::UnsupportedRequestBodySchemaKind {
+            diagnostics.push(HeaveError::UnsupportedSchemaKind {
                 context: diagnostic_context.clone(),
                 kind: "OneOf".to_string(),
                 jsonpath: jsonpath.to_string(),
             })
         }
         openapiv3::SchemaKind::AllOf { .. } => {
-            diagnostics.push(HeaveError::UnsupportedRequestBodySchemaKind {
+            diagnostics.push(HeaveError::UnsupportedSchemaKind {
                 context: diagnostic_context.clone(),
                 kind: "AllOf".to_string(),
                 jsonpath: jsonpath.to_string(),
             })
         }
         openapiv3::SchemaKind::AnyOf { .. } => {
-            diagnostics.push(HeaveError::UnsupportedRequestBodySchemaKind {
+            diagnostics.push(HeaveError::UnsupportedSchemaKind {
                 context: diagnostic_context.clone(),
                 kind: "AnyOf".to_string(),
                 jsonpath: jsonpath.to_string(),
             })
         }
-        openapiv3::SchemaKind::Not { .. } => {
-            diagnostics.push(HeaveError::UnsupportedRequestBodySchemaKind {
-                context: diagnostic_context.clone(),
-                kind: "Not".to_string(),
-                jsonpath: jsonpath.to_string(),
-            })
-        }
-        openapiv3::SchemaKind::Any(_) => {
-            diagnostics.push(HeaveError::UnsupportedRequestBodySchemaKind {
-                context: diagnostic_context.clone(),
-                kind: "Any".to_string(),
-                jsonpath: jsonpath.to_string(),
-            })
-        }
+        openapiv3::SchemaKind::Not { .. } => diagnostics.push(HeaveError::UnsupportedSchemaKind {
+            context: diagnostic_context.clone(),
+            kind: "Not".to_string(),
+            jsonpath: jsonpath.to_string(),
+        }),
+        openapiv3::SchemaKind::Any(_) => diagnostics.push(HeaveError::UnsupportedSchemaKind {
+            context: diagnostic_context.clone(),
+            kind: "Any".to_string(),
+            jsonpath: jsonpath.to_string(),
+        }),
         openapiv3::SchemaKind::Type(schema_type) => {
             match schema_type {
                 openapiv3::Type::Boolean(_) => {
@@ -852,40 +848,36 @@ fn generate_request_body_from_schema(
     let mut diagnostics = vec![];
     match &schema.schema_kind {
         openapiv3::SchemaKind::OneOf { .. } => {
-            diagnostics.push(HeaveError::UnsupportedRequestBodySchemaKind {
+            diagnostics.push(HeaveError::UnsupportedSchemaKind {
                 context: diagnostic_context.clone(),
                 kind: "OneOf".to_string(),
                 jsonpath: name.unwrap_or("".to_string()),
             })
         }
         openapiv3::SchemaKind::AllOf { .. } => {
-            diagnostics.push(HeaveError::UnsupportedRequestBodySchemaKind {
+            diagnostics.push(HeaveError::UnsupportedSchemaKind {
                 context: diagnostic_context.clone(),
                 kind: "AllOf".to_string(),
                 jsonpath: name.unwrap_or("".to_string()),
             })
         }
         openapiv3::SchemaKind::AnyOf { .. } => {
-            diagnostics.push(HeaveError::UnsupportedRequestBodySchemaKind {
+            diagnostics.push(HeaveError::UnsupportedSchemaKind {
                 context: diagnostic_context.clone(),
                 kind: "AnyOf".to_string(),
                 jsonpath: name.unwrap_or("".to_string()),
             })
         }
-        openapiv3::SchemaKind::Not { .. } => {
-            diagnostics.push(HeaveError::UnsupportedRequestBodySchemaKind {
-                context: diagnostic_context.clone(),
-                kind: "Not".to_string(),
-                jsonpath: name.unwrap_or("".to_string()),
-            })
-        }
-        openapiv3::SchemaKind::Any(_) => {
-            diagnostics.push(HeaveError::UnsupportedRequestBodySchemaKind {
-                context: diagnostic_context.clone(),
-                kind: "Any".to_string(),
-                jsonpath: name.unwrap_or("".to_string()),
-            })
-        }
+        openapiv3::SchemaKind::Not { .. } => diagnostics.push(HeaveError::UnsupportedSchemaKind {
+            context: diagnostic_context.clone(),
+            kind: "Not".to_string(),
+            jsonpath: name.unwrap_or("".to_string()),
+        }),
+        openapiv3::SchemaKind::Any(_) => diagnostics.push(HeaveError::UnsupportedSchemaKind {
+            context: diagnostic_context.clone(),
+            kind: "Any".to_string(),
+            jsonpath: name.unwrap_or("".to_string()),
+        }),
         openapiv3::SchemaKind::Type(schema_type) => {
             // A small helper that takes properties that may or may not have names and formats them
             // accordingly. If they have a name, start by indenting them, print the named property,
