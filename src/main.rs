@@ -13,25 +13,28 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    #[command(about = "Generate hurl files from OpenAPI spec.")]
+    #[command(about = "Generate hurl files from OpenAPI spec")]
     Generate(GenerateArgs),
 
-    #[command(about = "Print the default template.")]
+    #[command(about = "Print the default template")]
     Template,
 }
 
 #[derive(Args, Debug)]
 struct GenerateArgs {
     #[arg(
-        help = "The path to an OpenAPI spec. This spec must not contain references to other files."
+        help = "The path to an OpenAPI spec. This spec must not contain references to other files"
     )]
     path: PathBuf,
 
-    #[arg(help = "The directory where generated hurl files will be created.")]
+    #[arg(help = "The directory where generated hurl files will be created")]
     output: PathBuf,
 
-    #[arg(long, help = "Prints the default template.")]
+    #[arg(long, help = "Prints the default template")]
     template: Option<PathBuf>,
+
+    #[arg(long, help = "Prints diagnostics to stdout")]
+    show_diagnostics: bool,
 }
 
 /// The struct used to capture output variables.
@@ -361,7 +364,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             let result = generate(openapi);
             write_outputs(&result.outputs, &template, &output_directory)?;
 
-            result.diagnostics.iter().for_each(|d| println!("{}", d));
+            if args.show_diagnostics {
+                result.diagnostics.iter().for_each(|d| println!("{}", d));
+            } else if result.diagnostics.len() > 0 {
+                eprintln!("Diagnostics are available. Re-run your previous command with `--show-diagnostics` to see them.")
+            }
 
             Ok(())
         }
