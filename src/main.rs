@@ -227,7 +227,7 @@ Reference: {}"#, .context.path, .context.operation, .reference
     #[error(
         r#"
 -------------------------------------------
-UnsupportedRequestBodySchemaKindUnsupported
+UnsupportedRequestBodySchemaKind
 
 Message: Using AllOf, AnyOf, etc. in Request Bodies is currently not supported.
 Path: {}
