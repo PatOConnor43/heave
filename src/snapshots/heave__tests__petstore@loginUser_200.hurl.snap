@@ -1,0 +1,17 @@
+---
+source: src/main.rs
+input_file: src/snapshots/petstore/loginUser_200.hurl
+---
+GET {{ baseurl }}/user/login
+Authorization: Bearer {{ authorization }}
+Prefer: code=200
+
+[QueryStringParams]
+username:
+password:
+
+HTTP 200
+
+[Asserts]
+jsonpath "$" isString
+
