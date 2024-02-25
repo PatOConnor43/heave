@@ -49,6 +49,11 @@ pub struct Output {
     pub request_body_parameter: String,
 }
 
+pub struct GenerateResult {
+    outputs: Vec<Output>,
+    diagnostics: Vec<HeaveError>,
+}
+
 pub enum InputSpecExtension {
     Json,
     Yaml,
@@ -318,6 +323,15 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
                 None => DEFAULT_HURL_TEMPLATE.to_string(),
             };
+
+            // This is used as a mechanism to validate that the syntax of the template parses
+            // correctly before doing more work. The function that writes the output creates its
+            // own minijinja Environment.
+            let mut jinja_env = Environment::new();
+            jinja_env
+                .add_template("output.hurl", &template)
+                .map_err(|e| HeaveError::JinjaError { source: e })?;
+
             let input_path = &args.path;
             let input_metadata = std::fs::metadata(&input_path)?;
             if !input_metadata.is_file() {
@@ -342,7 +356,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
             };
 
-            generate(openapi, output_directory, &template)
+            let result = generate(openapi);
+            write_outputs(&result.outputs, &template, &output_directory)?;
+
+            //diagnostics.iter().for_each(|d| println!("{}", d));
+
+            Ok(())
         }
         Commands::Template => {
             println!("{}", DEFAULT_HURL_TEMPLATE);
@@ -351,15 +370,38 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 }
 
-fn generate(
-    openapi: openapiv3::OpenAPI,
-    output_directory: PathBuf,
+fn write_outputs(
+    outputs: &[Output],
     template: &str,
+    output_directory: &PathBuf,
 ) -> Result<(), Box<dyn Error>> {
     let mut jinja_env = Environment::new();
-    jinja_env
-        .add_template("output.hurl", template)
-        .map_err(|e| HeaveError::JinjaError { source: e })?;
+    // The content of this template should have already been validated
+    jinja_env.add_template("output.hurl", &template)?;
+    let template = jinja_env.get_template("output.hurl")?;
+
+    for output in outputs.iter() {
+        let mut file_path = output_directory.clone();
+        file_path.push(&output.name);
+        let file = std::fs::File::create(file_path)?;
+        template.render_to_write(
+            context! {
+                name => output.name,
+                method => output.method,
+                path => output.path,
+                expected_status_code => output.expected_status_code,
+                header_parameters => output.header_parameters,
+                query_parameters => output.query_parameters,
+                asserts => output.asserts,
+                request_body_parameter => output.request_body_parameter,
+            },
+            file,
+        )?;
+    }
+    Ok(())
+}
+
+fn generate(openapi: openapiv3::OpenAPI) -> GenerateResult {
     let mut outputs: Vec<Output> = vec![];
     let mut diagnostics: Vec<HeaveError> = vec![];
     for (path, method, operation) in openapi.operations() {
@@ -545,27 +587,10 @@ fn generate(
         }
     }
 
-    let template = jinja_env.get_template("output.hurl").unwrap();
-
-    for output in outputs.iter() {
-        let content = template
-            .render(context! {
-                name => output.name,
-                method => output.method,
-                path => output.path,
-                expected_status_code => output.expected_status_code,
-                header_parameters => output.header_parameters,
-                query_parameters => output.query_parameters,
-                asserts => output.asserts,
-                request_body_parameter => output.request_body_parameter,
-            })
-            .unwrap();
-        let mut file_path = output_directory.clone();
-        file_path.push(&output.name);
-        std::fs::write(file_path, content)?;
+    GenerateResult {
+        outputs,
+        diagnostics,
     }
-    diagnostics.iter().for_each(|d| println!("{}", d));
-    Ok(())
 }
 
 fn generate_assert_from_schema(
@@ -1004,7 +1029,7 @@ mod tests {
     use insta::{assert_snapshot, glob};
     use openapiv3::OpenAPI;
 
-    use crate::generate;
+    use crate::{generate, write_outputs, DEFAULT_HURL_TEMPLATE};
 
     #[test]
     fn petstore() -> Result<(), Box<dyn Error>> {
@@ -1012,7 +1037,8 @@ mod tests {
         let content = std::fs::read_to_string("src/snapshots/petstore/petstore.yaml")?;
         let openapi: OpenAPI = serde_yaml::from_str(&content).expect("Could not deserialize input");
         let output_directory = PathBuf::from_str("src/snapshots/petstore")?;
-        generate(openapi, output_directory, crate::DEFAULT_HURL_TEMPLATE)?;
+        let result = generate(openapi);
+        write_outputs(&result.outputs, DEFAULT_HURL_TEMPLATE, &output_directory)?;
         let mut settings = insta::Settings::clone_current();
         settings.set_omit_expression(true);
         settings.bind(|| {
@@ -1027,7 +1053,8 @@ mod tests {
         let content = std::fs::read_to_string("src/snapshots/petstore/petstore.json")?;
         let openapi: OpenAPI = serde_json::from_str(&content).expect("Could not deserialize input");
         let output_directory = PathBuf::from_str("src/snapshots/petstore")?;
-        generate(openapi, output_directory, crate::DEFAULT_HURL_TEMPLATE)?;
+        let result = generate(openapi);
+        write_outputs(&result.outputs, DEFAULT_HURL_TEMPLATE, &output_directory)?;
         let mut settings = insta::Settings::clone_current();
         settings.set_omit_expression(true);
         settings.bind(|| {
@@ -1041,4 +1068,14 @@ mod tests {
 
         Ok(())
     }
+
+    //#[test]
+    //fn diagnostic_MalformedParameterReference() -> Result<(), Box<dyn Error>> {
+    //    let input = std::fs::read_to_string("snapshots/petstore/MalformedParameterReference.yaml")?;
+    //    let openapi: OpenAPI = serde_json::from_str(&input)?;
+    //    let output_directory = PathBuf::from_str("src/snapshots/diagnostics");
+    //    let result = generate(openapi);
+    //    write_outputs(&result.outputs, DEFAULT_HURL_TEMPLATE, &output_directory)?;
+    //    Ok(())
+    //}
 }
