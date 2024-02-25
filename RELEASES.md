@@ -1,3 +1,9 @@
+# Version 0.9.0 (2024-02-25)
+
+New features:
+- Diagnostics
+  - Diagnostics allow users to see issues that this application ran into while trying to parse their spec. This may include malformed references, unsupported kinds, and failing to find an application/json media type (among others). Use the new `--show-diagnostics` flag to print them. If they exist bug the flag isn't enabled, a stderr message will appear letting you know that you can re-run the command.
+
 # Version 0.8.1 (2024-02-24)
 
 Bug Fixes:
