@@ -1,3 +1,8 @@
+# Version 0.8.1 (2024-02-24)
+
+Bug Fixes:
+  - Fixed an issue where hurl files would not be generated if a request body didn't have an application/json media type
+
 # Version 0.8.0 (2024-02-18)
 
 New features:
