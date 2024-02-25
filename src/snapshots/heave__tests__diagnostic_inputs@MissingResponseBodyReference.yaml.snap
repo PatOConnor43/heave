@@ -1,0 +1,16 @@
+---
+source: src/main.rs
+input_file: src/snapshots/diagnostics/MissingResponseBodyReference.yaml
+---
+GenerateResult {
+    outputs: [],
+    diagnostics: [
+        MissingResponseBodyReference {
+            context: DiagnosticContext {
+                operation: "addPet",
+                path: "/pets",
+            },
+            reference: "#/components/responses/WRONG",
+        },
+    ],
+}

@@ -1,0 +1,20 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/hj-goto/OpenAPI-Specification/e74e05b4401730ae5531dda0fecd9a15b0a2a0af/schemas/v3.0/schema.json
+openapi: 3.0.2
+info:
+  version: 1.0.17
+  title: Swagger Petstore - OpenAPI 3.0
+paths:
+  /pets:
+    post:
+      summary: Add a pet to the store
+      operationId: addPet
+      responses:
+        '200':
+          description: successful operation
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - type: object
+                oneOf:
+                  - type: object

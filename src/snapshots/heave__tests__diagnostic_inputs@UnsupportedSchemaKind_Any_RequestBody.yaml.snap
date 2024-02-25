@@ -1,0 +1,30 @@
+---
+source: src/main.rs
+input_file: src/snapshots/diagnostics/UnsupportedSchemaKind_Any_RequestBody.yaml
+---
+GenerateResult {
+    outputs: [
+        Output {
+            expected_status_code: 200,
+            name: "addPet_200.hurl",
+            path: "/pets",
+            method: "POST",
+            header_parameters: [],
+            query_parameters: [],
+            asserts: [
+                "jsonpath \"$\" isCollection",
+            ],
+            request_body_parameter: "",
+        },
+    ],
+    diagnostics: [
+        UnsupportedSchemaKind {
+            context: DiagnosticContext {
+                operation: "addPet",
+                path: "/pets",
+            },
+            kind: "Any",
+            jsonpath: "",
+        },
+    ],
+}

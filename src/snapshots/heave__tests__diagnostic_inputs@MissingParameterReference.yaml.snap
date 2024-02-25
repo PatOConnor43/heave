@@ -1,0 +1,29 @@
+---
+source: src/main.rs
+input_file: src/snapshots/diagnostics/MissingParameterReference.yaml
+---
+GenerateResult {
+    outputs: [
+        Output {
+            expected_status_code: 200,
+            name: "getPetById_200.hurl",
+            path: "/pets/{{petId}}",
+            method: "GET",
+            header_parameters: [],
+            query_parameters: [],
+            asserts: [
+                "jsonpath \"$\" isString",
+            ],
+            request_body_parameter: "",
+        },
+    ],
+    diagnostics: [
+        MissingParameterReference {
+            context: DiagnosticContext {
+                operation: "getPetById",
+                path: "/pets/{petId}",
+            },
+            reference: "#/components/parameters/PetId",
+        },
+    ],
+}
