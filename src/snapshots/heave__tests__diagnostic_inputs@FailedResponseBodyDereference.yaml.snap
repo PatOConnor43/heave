@@ -1,0 +1,16 @@
+---
+source: src/main.rs
+input_file: src/snapshots/diagnostics/FailedResponseBodyDereference.yaml
+---
+GenerateResult {
+    outputs: [],
+    diagnostics: [
+        FailedResponseBodyDereference {
+            context: DiagnosticContext {
+                operation: "addPet",
+                path: "/pets",
+            },
+            reference: "#/components/responses/PetReference",
+        },
+    ],
+}

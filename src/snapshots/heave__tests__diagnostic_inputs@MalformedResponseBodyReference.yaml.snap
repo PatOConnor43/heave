@@ -1,0 +1,16 @@
+---
+source: src/main.rs
+input_file: src/snapshots/diagnostics/MalformedResponseBodyReference.yaml
+---
+GenerateResult {
+    outputs: [],
+    diagnostics: [
+        MalformedResponseBodyReference {
+            context: DiagnosticContext {
+                operation: "addPet",
+                path: "/pets",
+            },
+            reference: "#/components/WRONG/Pet",
+        },
+    ],
+}
