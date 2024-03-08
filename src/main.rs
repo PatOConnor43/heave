@@ -71,7 +71,8 @@ Prefer: code={{ expected_status_code }}
 {% endfor %}{% if query_parameters %}
 [QueryStringParams]
 {% for query in query_parameters %}{{ query }}:
-{% endfor %}{% endif %}{{ request_body_parameter }}
+{% endfor %}
+{% endif %}{{ request_body_parameter }}
 HTTP {{ expected_status_code }}
 {% if asserts %}
 [Asserts]
@@ -631,12 +632,19 @@ fn generate_assert_from_schema(
                 jsonpath: jsonpath.to_string(),
             })
         }
-        openapiv3::SchemaKind::AllOf { .. } => {
-            diagnostics.push(HeaveError::UnsupportedSchemaKind {
-                context: diagnostic_context.clone(),
-                kind: "AllOf".to_string(),
-                jsonpath: jsonpath.to_string(),
-            })
+        openapiv3::SchemaKind::AllOf { all_of } => {
+            for all_of_schema_or_ref in all_of {
+                let (all_of_schema, mut inner_diagnostics) =
+                    resolve_schema(openapi, all_of_schema_or_ref, diagnostic_context);
+                diagnostics.append(&mut inner_diagnostics);
+
+                if let Some(s) = all_of_schema {
+                    let (mut child_asserts, mut child_diagnostics) =
+                        generate_assert_from_schema(openapi, s, jsonpath, true, diagnostic_context);
+                    asserts.append(&mut child_asserts);
+                    diagnostics.append(&mut child_diagnostics);
+                }
+            }
         }
         openapiv3::SchemaKind::AnyOf { .. } => {
             diagnostics.push(HeaveError::UnsupportedSchemaKind {
@@ -861,7 +869,33 @@ fn generate_request_body_from_schema(
                 jsonpath: name.unwrap_or("".to_string()),
             })
         }
-        openapiv3::SchemaKind::AllOf { .. } => {
+        openapiv3::SchemaKind::AllOf { all_of } => {
+            let mut child_request_bodies = vec![];
+            for all_of_schema_or_ref in all_of {
+                let (all_of_schema, mut inner_diagnostics) =
+                    resolve_schema(openapi, all_of_schema_or_ref, diagnostic_context);
+                diagnostics.append(&mut inner_diagnostics);
+                if let Some(s) = all_of_schema {
+                    let (request_body, mut inner_diagnostics) =
+                        generate_request_body_from_schema(&openapi, &s, None, diagnostic_context);
+
+                    child_request_bodies.push(request_body);
+                    diagnostics.append(&mut inner_diagnostics);
+                }
+                let stringified_body = child_request_bodies
+                    .into_iter()
+                    .filter_map(|body| body)
+                    .collect::<Vec<String>>()
+                    .join(",\n");
+
+                return match name {
+                    Some(name) => (
+                        Some(format!("\"{}\": {}", name, stringified_body)),
+                        diagnostics,
+                    ),
+                    None => (Some(stringified_body), diagnostics),
+                };
+            }
             diagnostics.push(HeaveError::UnsupportedSchemaKind {
                 context: diagnostic_context.clone(),
                 kind: "AllOf".to_string(),
