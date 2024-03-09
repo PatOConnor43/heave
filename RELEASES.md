@@ -1,3 +1,8 @@
+# Version 0.10.0 (2024-03-08)
+
+New features:
+- Support for the allOf attribute. This should generate a hurl request body as well as asserts.
+
 # Version 0.9.0 (2024-02-25)
 
 New features:
