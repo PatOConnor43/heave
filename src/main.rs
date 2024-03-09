@@ -1,4 +1,5 @@
 use clap::{Args, Parser, Subcommand};
+use itertools::Itertools;
 use minijinja::{context, Environment};
 use openapiv3::{MediaType, OpenAPI, ReferenceOr};
 use std::{error::Error, path::PathBuf};
@@ -71,7 +72,8 @@ Prefer: code={{ expected_status_code }}
 {% endfor %}{% if query_parameters %}
 [QueryStringParams]
 {% for query in query_parameters %}{{ query }}:
-{% endfor %}{% endif %}{{ request_body_parameter }}
+{% endfor %}
+{% endif %}{{ request_body_parameter }}
 HTTP {{ expected_status_code }}
 {% if asserts %}
 [Asserts]
@@ -176,6 +178,16 @@ Operation: {}"#, .context.path, .context.operation,
     MissingApplicationJsonRequestBodyMediaType { context: DiagnosticContext },
     #[error(
         r#"
+------------------------------------------
+MissingApplicationJsonResponseBodyMediaType
+
+Message: Missing application/json MediaType for ResponseBody.
+Path: {}
+Operation: {}"#, .context.path, .context.operation,
+    )]
+    MissingApplicationJsonResponseBodyMediaType { context: DiagnosticContext },
+    #[error(
+        r#"
 -----------------------------------
 MissingSchemaDefinitionForMediaType
 
@@ -232,7 +244,7 @@ Reference: {}"#, .context.path, .context.operation, .reference
 -------------------------------------------
 UnsupportedSchemaKind
 
-Message: Generation based on schemas using AnyOf, AllOf, etc. is currently not supported.
+Message: Generation based on schemas using AnyOf, OneOf, Not, or Any are not currently supported.
 Path: {}
 Operation: {}
 Detected Kind: {}
@@ -556,7 +568,7 @@ fn generate(openapi: openapiv3::OpenAPI) -> GenerateResult {
                         }
                     }
                     if media_type.is_none() {
-                        diagnostics.push(HeaveError::MissingApplicationJsonRequestBodyMediaType {
+                        diagnostics.push(HeaveError::MissingApplicationJsonResponseBodyMediaType {
                             context: context.clone(),
                         });
                         continue;
@@ -581,6 +593,10 @@ fn generate(openapi: openapiv3::OpenAPI) -> GenerateResult {
                         generate_assert_from_schema(&openapi, schema, "$", is_required, &context);
                     asserts.append(&mut new_asserts);
                     diagnostics.append(&mut new_diagnostics);
+
+                    // It's possible for identical asserts to be generated when dealing with
+                    // polymorphic attributes (like allOf). This cleans that up.
+                    let asserts: Vec<_> = asserts.into_iter().unique().collect();
 
                     let output = Output {
                         expected_status_code: *code,
@@ -631,12 +647,24 @@ fn generate_assert_from_schema(
                 jsonpath: jsonpath.to_string(),
             })
         }
-        openapiv3::SchemaKind::AllOf { .. } => {
-            diagnostics.push(HeaveError::UnsupportedSchemaKind {
-                context: diagnostic_context.clone(),
-                kind: "AllOf".to_string(),
-                jsonpath: jsonpath.to_string(),
-            })
+        openapiv3::SchemaKind::AllOf { all_of } => {
+            for all_of_schema_or_ref in all_of {
+                let (all_of_schema, mut inner_diagnostics) =
+                    resolve_schema(openapi, all_of_schema_or_ref, diagnostic_context);
+                diagnostics.append(&mut inner_diagnostics);
+
+                if let Some(s) = all_of_schema {
+                    let (mut child_asserts, mut child_diagnostics) = generate_assert_from_schema(
+                        openapi,
+                        s,
+                        jsonpath,
+                        is_required,
+                        diagnostic_context,
+                    );
+                    asserts.append(&mut child_asserts);
+                    diagnostics.append(&mut child_diagnostics);
+                }
+            }
         }
         openapiv3::SchemaKind::AnyOf { .. } => {
             diagnostics.push(HeaveError::UnsupportedSchemaKind {
@@ -861,12 +889,50 @@ fn generate_request_body_from_schema(
                 jsonpath: name.unwrap_or("".to_string()),
             })
         }
-        openapiv3::SchemaKind::AllOf { .. } => {
-            diagnostics.push(HeaveError::UnsupportedSchemaKind {
-                context: diagnostic_context.clone(),
-                kind: "AllOf".to_string(),
-                jsonpath: name.unwrap_or("".to_string()),
-            })
+        openapiv3::SchemaKind::AllOf { all_of } => {
+            let mut child_request_bodies = vec![];
+            let mut flattened_object_fields = serde_json::Value::Object(serde_json::Map::new());
+            for all_of_schema_or_ref in all_of {
+                let (all_of_schema, mut inner_diagnostics) =
+                    resolve_schema(openapi, all_of_schema_or_ref, diagnostic_context);
+                diagnostics.append(&mut inner_diagnostics);
+                if let Some(s) = all_of_schema {
+                    let (request_body, mut inner_diagnostics) =
+                        generate_request_body_from_schema(&openapi, &s, None, diagnostic_context);
+                    diagnostics.append(&mut inner_diagnostics);
+
+                    if let Some(body) = &request_body {
+                        // In the case of `allOf`, objects need special handling. We create an
+                        // empty JSON value and then flatten all the fields on to that single
+                        // value. Any primitive fields can just be added directly to
+                        // `child_request_bodies`.
+                        let mut j: serde_json::Value = serde_json::from_str(&body).unwrap();
+                        if j.is_object() {
+                            let inner_map = flattened_object_fields.as_object_mut().unwrap();
+                            inner_map.append(&mut j.as_object_mut().unwrap());
+                        } else {
+                            child_request_bodies.push(request_body);
+                        }
+                    }
+                }
+            }
+            // Only include `flattened_object_fields` if we actually added anything to it.
+            if flattened_object_fields.as_object().unwrap().len() > 0 {
+                child_request_bodies.push(Some(flattened_object_fields.to_string()));
+            }
+            let stringified_body = child_request_bodies
+                .into_iter()
+                .filter_map(|body| body)
+                .collect::<Vec<String>>()
+                .join(",\n");
+
+            return match name {
+                Some(name) => (
+                    Some(format!("\"{}\": {}", name, stringified_body)),
+                    diagnostics,
+                ),
+                None => (Some(stringified_body), diagnostics),
+            };
         }
         openapiv3::SchemaKind::AnyOf { .. } => {
             diagnostics.push(HeaveError::UnsupportedSchemaKind {
@@ -1090,6 +1156,23 @@ mod tests {
                 let input: OpenAPI = openapi_from_yaml!(&path);
                 let result = generate(input);
                 assert_debug_snapshot!(result);
+            });
+        });
+        Ok(())
+    }
+
+    #[test]
+    fn allof_inputs() -> Result<(), Box<dyn Error>> {
+        let openapi: OpenAPI = openapi_from_yaml!("src/snapshots/allof/petstore.yaml");
+        let output_directory = PathBuf::from_str("src/snapshots/allof")?;
+        let result = generate(openapi);
+        write_outputs(&result.outputs, DEFAULT_HURL_TEMPLATE, &output_directory)?;
+        let mut settings = insta::Settings::clone_current();
+        settings.set_omit_expression(true);
+        settings.bind(|| {
+            glob!("snapshots/allof/*.hurl", |path| {
+                let input = std::fs::read_to_string(path).unwrap();
+                assert_snapshot!(input);
             });
         });
         Ok(())
