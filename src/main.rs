@@ -2,7 +2,6 @@ use clap::{Args, Parser, Subcommand};
 use itertools::Itertools;
 use minijinja::{context, Environment};
 use openapiv3::{MediaType, OpenAPI, ReferenceOr};
-use serde_json::Value;
 use std::{error::Error, path::PathBuf};
 
 /// Program to generate hurl files from openapi schemas
@@ -245,7 +244,7 @@ Reference: {}"#, .context.path, .context.operation, .reference
 -------------------------------------------
 UnsupportedSchemaKind
 
-Message: Generation based on schemas using AnyOf, AllOf, etc. is currently not supported.
+Message: Generation based on schemas using AnyOf, OneOf, Not, or Any are not currently supported.
 Path: {}
 Operation: {}
 Detected Kind: {}
@@ -655,8 +654,13 @@ fn generate_assert_from_schema(
                 diagnostics.append(&mut inner_diagnostics);
 
                 if let Some(s) = all_of_schema {
-                    let (mut child_asserts, mut child_diagnostics) =
-                        generate_assert_from_schema(openapi, s, jsonpath, true, diagnostic_context);
+                    let (mut child_asserts, mut child_diagnostics) = generate_assert_from_schema(
+                        openapi,
+                        s,
+                        jsonpath,
+                        is_required,
+                        diagnostic_context,
+                    );
                     asserts.append(&mut child_asserts);
                     diagnostics.append(&mut child_diagnostics);
                 }
