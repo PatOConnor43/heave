@@ -1156,4 +1156,21 @@ mod tests {
         });
         Ok(())
     }
+
+    #[test]
+    fn allof_inputs() -> Result<(), Box<dyn Error>> {
+        let openapi: OpenAPI = openapi_from_yaml!("src/snapshots/allof/petstore.yaml");
+        let output_directory = PathBuf::from_str("src/snapshots/allof")?;
+        let result = generate(openapi);
+        write_outputs(&result.outputs, DEFAULT_HURL_TEMPLATE, &output_directory)?;
+        let mut settings = insta::Settings::clone_current();
+        settings.set_omit_expression(true);
+        settings.bind(|| {
+            glob!("snapshots/allof/*.hurl", |path| {
+                let input = std::fs::read_to_string(path).unwrap();
+                assert_snapshot!(input);
+            });
+        });
+        Ok(())
+    }
 }
