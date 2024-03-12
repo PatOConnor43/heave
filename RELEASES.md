@@ -1,3 +1,8 @@
+# Version 0.10.1 (2024-03-11)
+
+Bug Fixes:
+- Fixed a panic when trying to resolve request bodies for anyOf. It was possible for the schemas involved to result in no child request bodies. This happened when an allOf referenced a schema that was `Any` but this could have happened with `AnyOf`, `Not`, or `OneOf` as well. Now the field will be absent from the request body altogether, which matches existing behavior when an unsupported schema type is encountered.
+
 # Version 0.10.0 (2024-03-08)
 
 New features:
