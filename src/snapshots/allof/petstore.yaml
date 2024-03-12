@@ -121,6 +121,9 @@ components:
         status:
           allOf:
             - $ref: '#/components/schemas/PetPartStatus'
+        anyPart:
+          allOf:
+            - $ref: '#/components/schemas/AnyPart'
       type: object
     PetPartID:
       type: integer
@@ -148,6 +151,13 @@ components:
         - available
         - pending
         - sold
+    AnyPart:
+      description: >
+        This is a schema that deliberately looks like "Any" because it doesn't
+        use type, allOf, etc. It should not be present in thesnapshot test.
+      enum:
+        - any
+        - part
     CategoryPartID:
       description: "category description"
       type: object
