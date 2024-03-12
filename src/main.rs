@@ -906,7 +906,7 @@ fn generate_request_body_from_schema(
                         // empty JSON value and then flatten all the fields on to that single
                         // value. Any primitive fields can just be added directly to
                         // `child_request_bodies`.
-                        let mut j: serde_json::Value = serde_json::from_str(&body).unwrap();
+                        let mut j = serde_json::from_str::<serde_json::Value>(&body).unwrap();
                         if j.is_object() {
                             let inner_map = flattened_object_fields.as_object_mut().unwrap();
                             inner_map.append(&mut j.as_object_mut().unwrap());
@@ -920,6 +920,13 @@ fn generate_request_body_from_schema(
             if flattened_object_fields.as_object().unwrap().len() > 0 {
                 child_request_bodies.push(Some(flattened_object_fields.to_string()));
             }
+
+            // If child_request_bodies is empty we need to communicate that we couldn't build
+            // anything.
+            if child_request_bodies.is_empty() {
+                return (None, diagnostics);
+            }
+
             let stringified_body = child_request_bodies
                 .into_iter()
                 .filter_map(|body| body)
