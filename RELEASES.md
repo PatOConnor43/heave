@@ -1,3 +1,11 @@
+# Version 0.11.0 (2024-07-09)
+
+New Features:
+- Added a new flag (--only-new) prevents this tool from overwriting existing files. This is useful when you write your spec, make changes to the generated files, iterate on the spec, and only want to generate files for the changes.
+
+Chores:
+- Updated cargo-dist to 0.18.0
+
 # Version 0.10.1 (2024-03-11)
 
 Bug Fixes:
