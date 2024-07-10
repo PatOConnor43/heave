@@ -36,13 +36,19 @@ struct GenerateArgs {
 
     #[arg(long, help = "Prints diagnostics to stdout")]
     show_diagnostics: bool,
+
+    #[arg(
+        long,
+        help = "Only generate new files, do not overwrite existing files"
+    )]
+    only_new: bool,
 }
 
 /// The struct used to capture output variables.
 ///
 /// Each field defined in this struct will be available to the template. The template uses the
 /// minijinja syntax.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Output {
     pub expected_status_code: u16,
     pub name: String,
@@ -374,7 +380,26 @@ fn main() -> Result<(), Box<dyn Error>> {
             };
 
             let result = generate(openapi);
-            write_outputs(&result.outputs, &template, &output_directory)?;
+            let mut final_outputs = result.outputs;
+            if args.only_new {
+                let existing_files: Vec<PathBuf> = std::fs::read_dir(&output_directory)?
+                    .filter_map(|entry| {
+                        if entry.is_err() {
+                            return None;
+                        }
+                        if entry.as_ref().unwrap().file_type().is_err() {
+                            return None;
+                        }
+                        if !entry.as_ref().unwrap().file_type().unwrap().is_file() {
+                            return None;
+                        }
+                        Some(entry.unwrap().path())
+                    })
+                    .collect();
+                final_outputs = filter_only_new_outputs(&existing_files, final_outputs);
+            }
+
+            write_outputs(&final_outputs, &template, &output_directory)?;
 
             if args.show_diagnostics {
                 result.diagnostics.iter().for_each(|d| println!("{}", d));
@@ -389,6 +414,18 @@ fn main() -> Result<(), Box<dyn Error>> {
             Ok(())
         }
     }
+}
+
+fn filter_only_new_outputs(existing_files: &[PathBuf], outputs: Vec<Output>) -> Vec<Output> {
+    outputs
+        .into_iter()
+        .filter(|o| {
+            !existing_files.iter().any(|p| {
+                let output_file_name = PathBuf::from(&o.name);
+                *p == output_file_name
+            })
+        })
+        .collect()
 }
 
 fn write_outputs(
@@ -1107,7 +1144,7 @@ mod tests {
     use insta::{assert_debug_snapshot, assert_snapshot, glob};
     use openapiv3::OpenAPI;
 
-    use crate::{generate, write_outputs, DEFAULT_HURL_TEMPLATE};
+    use crate::{generate, write_outputs, Output, DEFAULT_HURL_TEMPLATE};
 
     // Creates an OpenAPI from a file path
     macro_rules! openapi_from_yaml {
@@ -1183,5 +1220,32 @@ mod tests {
             });
         });
         Ok(())
+    }
+
+    #[test]
+    fn filter_only_new_outputs() {
+        let existing_files = vec![PathBuf::from("file1.hurl"), PathBuf::from("file3.hurl")];
+        let out1 = Output {
+            name: "file1.hurl".to_string(),
+            method: "GET".to_string(),
+            expected_status_code: 0,
+            path: "".to_string(),
+            header_parameters: vec![],
+            query_parameters: vec![],
+            asserts: vec![],
+            request_body_parameter: "".to_string(),
+        };
+        let out2 = Output {
+            name: "file2.hurl".to_string(),
+            ..out1.clone()
+        };
+        let out3 = Output {
+            name: "file3.hurl".to_string(),
+            ..out1.clone()
+        };
+        let outputs = vec![out1, out2, out3];
+        let filtered = crate::filter_only_new_outputs(&existing_files, outputs);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered.get(0).unwrap().name, "file2.hurl");
     }
 }
