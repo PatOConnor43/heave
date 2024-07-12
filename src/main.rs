@@ -71,7 +71,7 @@ Examples:
 
     #[arg(
         long,
-        help = r#"A regex to match against operationIDs in the OpenAPI spec. Only operationIDs that match will be included in the generated files.
+        help = r#"A regex to match against operationIDs in the OpenAPI spec. Only operationIDs that match will be included in the generated files. Specifying this option will filter out any operations that do not have an operationID.
 
 Examples:
   - `Pets` will match any operationID that contains `Pets`
@@ -80,7 +80,7 @@ Examples:
   - `updatePet|getPetById` will match any operationID that contains `updatePet` or `getPetById`
 "#
     )]
-    include_operation_id: Option<String>,
+    include_operation_ids: Option<String>,
 }
 
 /// The struct used to capture output variables.
@@ -378,12 +378,12 @@ Source: {}"#, .source
     #[error(
         r#"
 ----------------------------
-Malformed --include-operation-id Regex
+Malformed --include-operation-ids Regex
 
 Message: Failed to parse the provided regex.
 Source: {}"#, .source
     )]
-    MalformedIncludeOperationIDRegex { source: regex_lite::Error },
+    MalformedIncludeOperationIDsRegex { source: regex_lite::Error },
 }
 
 #[derive(Debug, Clone)]
@@ -417,10 +417,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
             }
 
-            if args.include_operation_id.is_some() {
-                let include_operation_id = args.include_operation_id.as_ref().unwrap();
-                let valid = regex_lite::Regex::new(&include_operation_id)
-                    .map_err(|e| HeaveError::MalformedIncludeOperationIDRegex { source: e });
+            if args.include_operation_ids.is_some() {
+                let include_operation_ids = args.include_operation_ids.as_ref().unwrap();
+                let valid = regex_lite::Regex::new(&include_operation_ids)
+                    .map_err(|e| HeaveError::MalformedIncludeOperationIDsRegex { source: e });
                 if valid.is_err() {
                     let valid = valid.unwrap_err();
                     println!("{}", valid);
@@ -495,11 +495,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                 final_outputs = filter_include_status_codes_outputs(regex, final_outputs);
             }
 
-            if args.include_operation_id.is_some() {
-                let include_operation_id = args.include_operation_id.unwrap();
+            if args.include_operation_ids.is_some() {
+                let include_operation_ids = args.include_operation_ids.unwrap();
                 // Regex was validated at the start of the CLI
-                let regex = regex_lite::Regex::new(&include_operation_id).unwrap();
-                final_outputs = filter_include_operation_id_outputs(regex, final_outputs);
+                let regex = regex_lite::Regex::new(&include_operation_ids).unwrap();
+                final_outputs = filter_include_operation_ids_outputs(regex, final_outputs);
             }
 
             if args.only_new {
@@ -537,7 +537,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 }
 
-fn filter_include_operation_id_outputs(
+fn filter_include_operation_ids_outputs(
     regex: regex_lite::Regex,
     outputs: Vec<Output>,
 ) -> Vec<Output> {
@@ -1498,7 +1498,7 @@ mod tests {
     }
 
     #[test]
-    fn filter_include_operation_id_outputs() {
+    fn filter_include_operation_ids_outputs() {
         let out1 = Output {
             name: "addPet_200.hurl".to_string(),
             method: "".to_string(),
@@ -1552,7 +1552,7 @@ mod tests {
         ];
         for (regex, expected_output) in regexes.iter().zip(expected_outputs.iter()) {
             let filtered =
-                crate::filter_include_operation_id_outputs(regex.clone(), outputs.clone());
+                crate::filter_include_operation_ids_outputs(regex.clone(), outputs.clone());
             assert_eq!(filtered.len(), expected_output.len());
             for (i, output) in filtered.iter().enumerate() {
                 assert_eq!(output.name, expected_output[i].name);
