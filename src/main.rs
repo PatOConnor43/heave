@@ -42,6 +42,12 @@ struct GenerateArgs {
         help = "Only generate new files, do not overwrite existing files"
     )]
     only_new: bool,
+
+    #[arg(
+        long,
+        help = "A regex to match against paths in the OpenAPI spec. Only paths that match will be included in the generated files"
+    )]
+    include_paths: Option<String>,
 }
 
 /// The struct used to capture output variables.
@@ -52,7 +58,8 @@ struct GenerateArgs {
 pub struct Output {
     pub expected_status_code: u16,
     pub name: String,
-    pub path: String,
+    pub hurl_path: String,
+    pub oas_path: String,
     pub method: String,
     pub header_parameters: Vec<String>,
     pub query_parameters: Vec<String>,
@@ -316,6 +323,15 @@ Reference: {}"#, .context.path, .context.operation, .reference
         context: DiagnosticContext,
         reference: String,
     },
+    #[error(
+        r#"
+----------------------------
+Malformed --include-paths Regex
+
+Message: Failed to parse the provided regex.
+Source: {}"#, .source
+    )]
+    MalformedIncludePathsRegex { source: regex_lite::Error },
 }
 
 #[derive(Debug, Clone)]
@@ -328,6 +344,17 @@ fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Generate(args) => {
+            if args.include_paths.is_some() {
+                let include_paths = args.include_paths.as_ref().unwrap();
+                let valid = regex_lite::Regex::new(&include_paths)
+                    .map_err(|e| HeaveError::MalformedIncludePathsRegex { source: e });
+                if valid.is_err() {
+                    let valid = valid.unwrap_err();
+                    println!("{}", valid);
+                    return Err(valid.into());
+                }
+            }
+
             let output_directory = args.output;
             let output_directory_metadata = std::fs::metadata(&output_directory)?;
             if !output_directory_metadata.is_dir() {
@@ -381,6 +408,13 @@ fn main() -> Result<(), Box<dyn Error>> {
 
             let result = generate(openapi);
             let mut final_outputs = result.outputs;
+            if args.include_paths.is_some() {
+                let include_paths = args.include_paths.unwrap();
+                // Regex was validated at the start of the CLI
+                let regex = regex_lite::Regex::new(&include_paths).unwrap();
+                final_outputs = filter_include_paths_outputs(regex, final_outputs);
+            }
+
             if args.only_new {
                 let existing_files: Vec<PathBuf> = std::fs::read_dir(&output_directory)?
                     .filter_map(|entry| {
@@ -415,6 +449,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 }
+fn filter_include_paths_outputs(regex: regex_lite::Regex, outputs: Vec<Output>) -> Vec<Output> {
+    outputs
+        .into_iter()
+        .filter(|o| regex.is_match(&o.oas_path))
+        .collect()
+}
 
 fn filter_only_new_outputs(existing_files: &[PathBuf], outputs: Vec<Output>) -> Vec<Output> {
     outputs
@@ -446,7 +486,7 @@ fn write_outputs(
             context! {
                 name => output.name,
                 method => output.method,
-                path => output.path,
+                path => output.hurl_path,
                 expected_status_code => output.expected_status_code,
                 header_parameters => output.header_parameters,
                 query_parameters => output.query_parameters,
@@ -638,7 +678,8 @@ fn generate(openapi: openapiv3::OpenAPI) -> GenerateResult {
                     let output = Output {
                         expected_status_code: *code,
                         name,
-                        path: path.to_string().replace("{", "{{").replace("}", "}}"),
+                        hurl_path: path.to_string().replace("{", "{{").replace("}", "}}"),
+                        oas_path: path.to_string(),
                         method: method.to_string().to_uppercase(),
                         header_parameters: header_parameters.clone(),
                         query_parameters: query_parameters.clone(),
@@ -1229,7 +1270,8 @@ mod tests {
             name: "file1.hurl".to_string(),
             method: "GET".to_string(),
             expected_status_code: 0,
-            path: "".to_string(),
+            hurl_path: "".to_string(),
+            oas_path: "".to_string(),
             header_parameters: vec![],
             query_parameters: vec![],
             asserts: vec![],
