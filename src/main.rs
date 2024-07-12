@@ -68,6 +68,15 @@ Examples:
 "#
     )]
     include_status_codes: Option<String>,
+
+    #[arg(
+        long,
+        help = r#"A regex to match against operationIDs in the OpenAPI spec. Only operationIDs that match will be included in the generated files.
+
+Examples:
+"#
+    )]
+    include_operation_id: Option<String>,
 }
 
 /// The struct used to capture output variables.
@@ -80,6 +89,7 @@ pub struct Output {
     pub name: String,
     pub hurl_path: String,
     pub oas_path: String,
+    pub oas_operation_id: Option<String>,
     pub method: String,
     pub header_parameters: Vec<String>,
     pub query_parameters: Vec<String>,
@@ -361,6 +371,15 @@ Message: Failed to parse the provided regex.
 Source: {}"#, .source
     )]
     MalformedIncludeStatusCodesRegex { source: regex_lite::Error },
+    #[error(
+        r#"
+----------------------------
+Malformed --include-operation-id Regex
+
+Message: Failed to parse the provided regex.
+Source: {}"#, .source
+    )]
+    MalformedIncludeOperationIDRegex { source: regex_lite::Error },
 }
 
 #[derive(Debug, Clone)]
@@ -387,6 +406,17 @@ fn main() -> Result<(), Box<dyn Error>> {
                 let include_status_codes = args.include_status_codes.as_ref().unwrap();
                 let valid = regex_lite::Regex::new(&include_status_codes)
                     .map_err(|e| HeaveError::MalformedIncludeStatusCodesRegex { source: e });
+                if valid.is_err() {
+                    let valid = valid.unwrap_err();
+                    println!("{}", valid);
+                    return Err(valid.into());
+                }
+            }
+
+            if args.include_operation_id.is_some() {
+                let include_operation_id = args.include_operation_id.as_ref().unwrap();
+                let valid = regex_lite::Regex::new(&include_operation_id)
+                    .map_err(|e| HeaveError::MalformedIncludeOperationIDRegex { source: e });
                 if valid.is_err() {
                     let valid = valid.unwrap_err();
                     println!("{}", valid);
@@ -461,6 +491,13 @@ fn main() -> Result<(), Box<dyn Error>> {
                 final_outputs = filter_include_status_codes_outputs(regex, final_outputs);
             }
 
+            if args.include_operation_id.is_some() {
+                let include_operation_id = args.include_operation_id.unwrap();
+                // Regex was validated at the start of the CLI
+                let regex = regex_lite::Regex::new(&include_operation_id).unwrap();
+                final_outputs = filter_include_operation_id_outputs(regex, final_outputs);
+            }
+
             if args.only_new {
                 let existing_files: Vec<PathBuf> = std::fs::read_dir(&output_directory)?
                     .filter_map(|entry| {
@@ -494,6 +531,21 @@ fn main() -> Result<(), Box<dyn Error>> {
             Ok(())
         }
     }
+}
+
+fn filter_include_operation_id_outputs(
+    regex: regex_lite::Regex,
+    outputs: Vec<Output>,
+) -> Vec<Output> {
+    outputs
+        .into_iter()
+        .filter(|o| {
+            if o.oas_operation_id.is_none() {
+                return false;
+            }
+            regex.is_match(&o.oas_operation_id.as_ref().unwrap())
+        })
+        .collect()
 }
 
 fn filter_include_status_codes_outputs(
@@ -737,6 +789,7 @@ fn generate(openapi: openapiv3::OpenAPI) -> GenerateResult {
                         name,
                         hurl_path: path.to_string().replace("{", "{{").replace("}", "}}"),
                         oas_path: path.to_string(),
+                        oas_operation_id: operation.operation_id.clone(),
                         method: method.to_string().to_uppercase(),
                         header_parameters: header_parameters.clone(),
                         query_parameters: query_parameters.clone(),
@@ -1329,6 +1382,7 @@ mod tests {
             expected_status_code: 0,
             hurl_path: "".to_string(),
             oas_path: "".to_string(),
+            oas_operation_id: None,
             header_parameters: vec![],
             query_parameters: vec![],
             asserts: vec![],
@@ -1357,6 +1411,7 @@ mod tests {
             expected_status_code: 200,
             hurl_path: "".to_string(),
             oas_path: "/documents".to_string(),
+            oas_operation_id: None,
             header_parameters: vec![],
             query_parameters: vec![],
             asserts: vec![],
@@ -1381,6 +1436,7 @@ mod tests {
             expected_status_code: 200,
             hurl_path: "".to_string(),
             oas_path: "/documents".to_string(),
+            oas_operation_id: None,
             header_parameters: vec![],
             query_parameters: vec![],
             asserts: vec![],
