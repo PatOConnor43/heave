@@ -7,7 +7,8 @@ GenerateResult {
         Output {
             expected_status_code: 200,
             name: "getPetById_200.hurl",
-            path: "/pets/{{petId}}",
+            hurl_path: "/pets/{{petId}}",
+            oas_path: "/pets/{petId}",
             method: "GET",
             header_parameters: [],
             query_parameters: [],
