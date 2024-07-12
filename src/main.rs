@@ -74,6 +74,10 @@ Examples:
         help = r#"A regex to match against operationIDs in the OpenAPI spec. Only operationIDs that match will be included in the generated files.
 
 Examples:
+  - `Pets` will match any operationID that contains `Pets`
+  - `^findPets` will match only operationIDs that start with `findPets`
+  - `ById$` will match any operationID that ends with `ById`
+  - `updatePet|getPetById` will match any operationID that contains `updatePet` or `getPetById`
 "#
     )]
     include_operation_id: Option<String>,
@@ -1486,6 +1490,69 @@ mod tests {
         for (regex, expected_output) in regexes.iter().zip(expected_outputs.iter()) {
             let filtered =
                 crate::filter_include_status_codes_outputs(regex.clone(), outputs.clone());
+            assert_eq!(filtered.len(), expected_output.len());
+            for (i, output) in filtered.iter().enumerate() {
+                assert_eq!(output.name, expected_output[i].name);
+            }
+        }
+    }
+
+    #[test]
+    fn filter_include_operation_id_outputs() {
+        let out1 = Output {
+            name: "addPet_200.hurl".to_string(),
+            method: "".to_string(),
+            expected_status_code: 200,
+            hurl_path: "".to_string(),
+            oas_path: "".to_string(),
+            oas_operation_id: None,
+            header_parameters: vec![],
+            query_parameters: vec![],
+            asserts: vec![],
+            request_body_parameter: "".to_string(),
+        };
+        let out2 = Output {
+            name: "updatePet_200.hurl".to_string(),
+            oas_operation_id: Some("updatePet".to_string()),
+            ..out1.clone()
+        };
+        let out3 = Output {
+            name: "findPetsByStatus_200.hurl".to_string(),
+            oas_operation_id: Some("findPetsByStatus".to_string()),
+            ..out1.clone()
+        };
+        let out4 = Output {
+            name: "findPetsByTags_200.hurl".to_string(),
+            oas_operation_id: Some("findPetsByTags".to_string()),
+            ..out1.clone()
+        };
+        let out5 = Output {
+            name: "getPetById_200.hurl".to_string(),
+            oas_operation_id: Some("getPetById".to_string()),
+            ..out1.clone()
+        };
+        let outputs = vec![
+            out1.clone(),
+            out2.clone(),
+            out3.clone(),
+            out4.clone(),
+            out5.clone(),
+        ];
+        let regexes = vec![
+            regex_lite::Regex::new("Pets").unwrap(),
+            regex_lite::Regex::new("^findPets").unwrap(),
+            regex_lite::Regex::new("ById$").unwrap(),
+            regex_lite::Regex::new("updatePet|getPetById").unwrap(),
+        ];
+        let expected_outputs = vec![
+            vec![&out3, &out4],
+            vec![&out3, &out4],
+            vec![&out5],
+            vec![&out2, &out5],
+        ];
+        for (regex, expected_output) in regexes.iter().zip(expected_outputs.iter()) {
+            let filtered =
+                crate::filter_include_operation_id_outputs(regex.clone(), outputs.clone());
             assert_eq!(filtered.len(), expected_output.len());
             for (i, output) in filtered.iter().enumerate() {
                 assert_eq!(output.name, expected_output[i].name);
