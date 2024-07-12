@@ -9,6 +9,9 @@ GenerateResult {
             name: "addPet_200.hurl",
             hurl_path: "/pets",
             oas_path: "/pets",
+            oas_operation_id: Some(
+                "addPet",
+            ),
             method: "POST",
             header_parameters: [],
             query_parameters: [],

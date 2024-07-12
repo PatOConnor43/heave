@@ -9,6 +9,9 @@ GenerateResult {
             name: "getPetById_200.hurl",
             hurl_path: "/pets/{{petId}}",
             oas_path: "/pets/{petId}",
+            oas_operation_id: Some(
+                "getPetById",
+            ),
             method: "GET",
             header_parameters: [],
             query_parameters: [],
