@@ -1290,4 +1290,29 @@ mod tests {
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered.get(0).unwrap().name, "file2.hurl");
     }
+
+    #[test]
+    fn filter_include_paths_outputs() {
+        let regex = regex_lite::Regex::new("^/documents$").unwrap();
+        let out1 = Output {
+            name: "get_documents_200.hurl".to_string(),
+            method: "GET".to_string(),
+            expected_status_code: 200,
+            hurl_path: "".to_string(),
+            oas_path: "/documents".to_string(),
+            header_parameters: vec![],
+            query_parameters: vec![],
+            asserts: vec![],
+            request_body_parameter: "".to_string(),
+        };
+        let out2 = Output {
+            name: "get_document_by_id_200.hurl".to_string(),
+            oas_path: "/documents/{documentId}".to_string(),
+            ..out1.clone()
+        };
+        let outputs = vec![out1, out2];
+        let filtered = crate::filter_include_paths_outputs(regex, outputs);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered.get(0).unwrap().name, "get_documents_200.hurl");
+    }
 }
