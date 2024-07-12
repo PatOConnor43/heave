@@ -316,6 +316,34 @@ Reference: {}"#, .context.path, .context.operation, .reference
         context: DiagnosticContext,
         reference: String,
     },
+    #[error(
+        r#"
+-----------------------------
+Request Body Schema Cycle Detected
+
+Message: A cycle was detected in the request body schema. Generation was halted for that schema.
+Path: {}
+Operation: {}
+jsonpath: {}"#, .context.path, .context.operation, .jsonpath
+    )]
+    RequestBodySchemaCycleDetected {
+        context: DiagnosticContext,
+        jsonpath: String,
+    },
+    #[error(
+        r#"
+-----------------------------
+Response Body Schema Cycle Detected
+
+Message: A cycle was detected in the response body schema. Generation was halted for that schema.
+Path: {}
+Operation: {}
+jsonpath: {}"#, .context.path, .context.operation, .jsonpath
+    )]
+    ResponseBodySchemaCycleDetected {
+        context: DiagnosticContext,
+        jsonpath: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -566,7 +594,7 @@ fn generate(openapi: openapiv3::OpenAPI) -> GenerateResult {
             }
             let schema = schema.unwrap();
             let request_body_parameter_tuple =
-                generate_request_body_from_schema(&openapi, &schema, None, &context);
+                generate_request_body_from_schema(&openapi, &schema, None, &context, "$");
             request_body_parameter = request_body_parameter_tuple.0;
             let mut inner_diagnostics = request_body_parameter_tuple.1;
             diagnostics.append(&mut inner_diagnostics);
@@ -666,6 +694,38 @@ fn generate_assert_from_schema(
     is_required: bool,
     diagnostic_context: &DiagnosticContext,
 ) -> (Vec<String>, Vec<HeaveError>) {
+    // Cycle Detection
+    let mut parts = jsonpath.split('.').rev().peekable();
+    while parts.peek().is_some() {
+        let part = parts.next().unwrap();
+        if part == "$" {
+            break;
+        }
+        // Check if the immediate next part is the same as the current part. If it is, we have a
+        // cycle
+        if parts.peek().map_or(false, |next| *next == part) {
+            return (
+                vec![],
+                vec![HeaveError::ResponseBodySchemaCycleDetected {
+                    context: diagnostic_context.clone(),
+                    jsonpath: jsonpath.to_string(),
+                }],
+            );
+        }
+        // Check the next part
+        let mut peek_again = parts.clone();
+        let _ = peek_again.next();
+        if peek_again.next().map_or(false, |next| next == part) {
+            return (
+                vec![],
+                vec![HeaveError::ResponseBodySchemaCycleDetected {
+                    context: diagnostic_context.clone(),
+                    jsonpath: jsonpath.to_string(),
+                }],
+            );
+        }
+    }
+
     let mut asserts = vec![];
     let mut diagnostics = vec![];
     let is_required_formatter = |jsonpath: &str, default: &str, is_required: bool| -> String {
@@ -916,7 +976,40 @@ fn generate_request_body_from_schema(
     schema: &openapiv3::Schema,
     name: Option<String>,
     diagnostic_context: &DiagnosticContext,
+    jsonpath: &str,
 ) -> (Option<String>, Vec<HeaveError>) {
+    // Cycle Detection
+    let mut parts = jsonpath.split('.').rev().peekable();
+    while parts.peek().is_some() {
+        let part = parts.next().unwrap();
+        if part == "$" {
+            break;
+        }
+        // Check if the immediate next part is the same as the current part. If it is, we have a
+        // cycle
+        if parts.peek().map_or(false, |next| *next == part) {
+            return (
+                None,
+                vec![HeaveError::RequestBodySchemaCycleDetected {
+                    context: diagnostic_context.clone(),
+                    jsonpath: jsonpath.to_string(),
+                }],
+            );
+        }
+        // Check the next part
+        let mut peek_again = parts.clone();
+        let _ = peek_again.next();
+        if peek_again.next().map_or(false, |next| next == part) {
+            return (
+                None,
+                vec![HeaveError::RequestBodySchemaCycleDetected {
+                    context: diagnostic_context.clone(),
+                    jsonpath: jsonpath.to_string(),
+                }],
+            );
+        }
+    }
+
     let mut diagnostics = vec![];
     match &schema.schema_kind {
         openapiv3::SchemaKind::OneOf { .. } => {
@@ -934,8 +1027,13 @@ fn generate_request_body_from_schema(
                     resolve_schema(openapi, all_of_schema_or_ref, diagnostic_context);
                 diagnostics.append(&mut inner_diagnostics);
                 if let Some(s) = all_of_schema {
-                    let (request_body, mut inner_diagnostics) =
-                        generate_request_body_from_schema(&openapi, &s, None, diagnostic_context);
+                    let (request_body, mut inner_diagnostics) = generate_request_body_from_schema(
+                        &openapi,
+                        &s,
+                        None,
+                        diagnostic_context,
+                        jsonpath,
+                    );
                     diagnostics.append(&mut inner_diagnostics);
 
                     if let Some(body) = &request_body {
@@ -1033,6 +1131,7 @@ fn generate_request_body_from_schema(
                                 &inner,
                                 Some(name.to_string()),
                                 diagnostic_context,
+                                format!("{}.{}", jsonpath, name).as_ref(),
                             );
                         child_request_bodies.push(request_body);
                         diagnostics.append(&mut inner_diagnostics);
@@ -1070,6 +1169,7 @@ fn generate_request_body_from_schema(
                             &inner,
                             None,
                             diagnostic_context,
+                            format!("{}[]", jsonpath).as_ref(),
                         );
                     diagnostics.append(&mut child_diagnostics);
                     if child_request_body.is_none() {
