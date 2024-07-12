@@ -1306,6 +1306,20 @@ mod tests {
     }
 
     #[test]
+    fn cycle_detection() -> Result<(), Box<dyn Error>> {
+        let mut settings = insta::Settings::clone_current();
+        settings.set_omit_expression(true);
+        settings.bind(|| {
+            glob!("snapshots/cycle_detection/*.yaml", |path| {
+                let input: OpenAPI = openapi_from_yaml!(&path);
+                let result = generate(input);
+                assert_debug_snapshot!(result);
+            });
+        });
+        Ok(())
+    }
+
+    #[test]
     fn allof_inputs() -> Result<(), Box<dyn Error>> {
         let openapi: OpenAPI = openapi_from_yaml!("src/snapshots/allof/petstore.yaml");
         let output_directory = PathBuf::from_str("src/snapshots/allof")?;
