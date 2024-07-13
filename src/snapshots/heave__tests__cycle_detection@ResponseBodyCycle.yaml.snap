@@ -1,0 +1,36 @@
+---
+source: src/main.rs
+input_file: src/snapshots/cycle_detection/ResponseBodyCycle.yaml
+---
+GenerateResult {
+    outputs: [
+        Output {
+            expected_status_code: 200,
+            name: "addPet_200.hurl",
+            hurl_path: "/pets",
+            oas_path: "/pets",
+            oas_operation_id: Some(
+                "addPet",
+            ),
+            method: "POST",
+            header_parameters: [],
+            query_parameters: [],
+            asserts: [
+                "jsonpath \"$\" isCollection",
+                "#jsonpath \"$.name\" isString",
+                "#jsonpath \"$.parent\" isCollection",
+                "#jsonpath \"$.parent.name\" isString",
+            ],
+            request_body_parameter: "{\n  \"name\": \"\"\n}",
+        },
+    ],
+    diagnostics: [
+        ResponseBodySchemaCycleDetected {
+            context: DiagnosticContext {
+                operation: "addPet",
+                path: "/pets",
+            },
+            jsonpath: "$.parent.parent",
+        },
+    ],
+}

@@ -1,3 +1,8 @@
+# Version 0.12.0 (2024-07-13)
+
+Bug Fixes:
+- This release adds cycle detection to response and request bodies. This should prevent infinite loops when a schema references itself or another schema that references the original schema. At this time, the detection only looks for the name of the field so it is possible for false positives to be detected.
+
 # Version 0.11.0 (2024-07-09)
 
 New Features:
