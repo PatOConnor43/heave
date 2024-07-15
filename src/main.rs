@@ -694,6 +694,11 @@ fn generate_assert_from_schema(
     is_required: bool,
     diagnostic_context: &DiagnosticContext,
 ) -> (Vec<String>, Vec<HeaveError>) {
+    // We don't need to generate an assert for a field that is write only
+    if schema.schema_data.write_only {
+        return (vec![], vec![]);
+    }
+
     // Cycle Detection
     let mut parts = jsonpath.split('.').rev().peekable();
     while parts.peek().is_some() {
@@ -978,6 +983,10 @@ fn generate_request_body_from_schema(
     diagnostic_context: &DiagnosticContext,
     jsonpath: &str,
 ) -> (Option<String>, Vec<HeaveError>) {
+    // We don't need to include this in the request body if it's read only
+    if schema.schema_data.read_only {
+        return (None, vec![]);
+    }
     // Cycle Detection
     let mut parts = jsonpath.split('.').rev().peekable();
     while parts.peek().is_some() {
@@ -1311,6 +1320,20 @@ mod tests {
         settings.set_omit_expression(true);
         settings.bind(|| {
             glob!("snapshots/cycle_detection/*.yaml", |path| {
+                let input: OpenAPI = openapi_from_yaml!(&path);
+                let result = generate(input);
+                assert_debug_snapshot!(result);
+            });
+        });
+        Ok(())
+    }
+
+    #[test]
+    fn read_only() -> Result<(), Box<dyn Error>> {
+        let mut settings = insta::Settings::clone_current();
+        settings.set_omit_expression(true);
+        settings.bind(|| {
+            glob!("snapshots/read_only/*.yaml", |path| {
                 let input: OpenAPI = openapi_from_yaml!(&path);
                 let result = generate(input);
                 assert_debug_snapshot!(result);
