@@ -1,3 +1,8 @@
+# Version 0.13.0 (2024-07-15)
+
+New Features:
+- Added support for readOnly and writeOnly properties on schemas. This will affect how asserts and request bodies are generated. If a schema is readOnly, it will be absent from the generated request body. If a schema is writeOnly, it will be absent from the generated asserts.
+
 # Version 0.12.0 (2024-07-13)
 
 Bug Fixes:
