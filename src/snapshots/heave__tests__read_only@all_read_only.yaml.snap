@@ -1,0 +1,24 @@
+---
+source: src/main.rs
+input_file: src/snapshots/read_only/all_read_only.yaml
+---
+GenerateResult {
+    outputs: [
+        Output {
+            expected_status_code: 200,
+            name: "addPet_200.hurl",
+            path: "/pets",
+            method: "POST",
+            header_parameters: [],
+            query_parameters: [],
+            asserts: [
+                "jsonpath \"$\" isCollection",
+                "#jsonpath \"$.name\" isString",
+                "#jsonpath \"$.B\" isCollection",
+                "#jsonpath \"$.B.name\" isString",
+            ],
+            request_body_parameter: "",
+        },
+    ],
+    diagnostics: [],
+}
