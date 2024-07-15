@@ -1,6 +1,6 @@
 ---
 source: src/main.rs
-input_file: src/snapshots/write_only/all_read_only.yaml
+input_file: src/snapshots/write_only/all_write_only.yaml
 ---
 GenerateResult {
     outputs: [
