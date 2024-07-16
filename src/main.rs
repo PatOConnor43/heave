@@ -450,7 +450,7 @@ fn filter_only_new_outputs(existing_files: &[PathBuf], outputs: Vec<Output>) -> 
         .filter(|o| {
             !existing_files.iter().any(|p| {
                 let output_file_name = PathBuf::from(&o.name);
-                *p == output_file_name
+                p.ends_with(&output_file_name)
             })
         })
         .collect()
@@ -1375,7 +1375,10 @@ mod tests {
 
     #[test]
     fn filter_only_new_outputs() {
-        let existing_files = vec![PathBuf::from("file1.hurl"), PathBuf::from("file3.hurl")];
+        let existing_files = vec![
+            PathBuf::from("output/file1.hurl"),
+            PathBuf::from("output/file3.hurl"),
+        ];
         let out1 = Output {
             name: "file1.hurl".to_string(),
             method: "GET".to_string(),
