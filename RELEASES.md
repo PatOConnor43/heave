@@ -1,3 +1,19 @@
+# Version 0.14.0 (2024-07-16)
+New Features:
+- `--include-operation-ids`
+- `--include-status-codes`
+- `--include-paths`
+
+Each of these take a regex input to help you filter generation to exactly what you're looking for. Specifying multiple or all of these together can be used to target a single response from an operation. As an example you could run:
+
+```
+heave generate --include-paths '^/pets$' --include-operation-ids 'addPet' --include-status-codes '200' petstore.json output
+```
+
+This would generate a single hurl file for the 200 response of the addPet operation.
+
+Please reference `heave generate --help` for more examples.
+
 # Version 0.13.1 (2024-07-16)
 
 Bug Fixes:
