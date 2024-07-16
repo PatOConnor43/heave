@@ -24,24 +24,63 @@ enum Commands {
 #[derive(Args, Debug)]
 struct GenerateArgs {
     #[arg(
-        help = "The path to an OpenAPI spec. This spec must not contain references to other files"
+        help = "The path to an OpenAPI spec. This spec must not contain references to other files\n"
     )]
     path: PathBuf,
 
-    #[arg(help = "The directory where generated hurl files will be created")]
+    #[arg(help = "The directory where generated hurl files will be created\n")]
     output: PathBuf,
 
-    #[arg(long, help = "Prints the default template")]
+    #[arg(long, help = "Prints the default template\n")]
     template: Option<PathBuf>,
 
-    #[arg(long, help = "Prints diagnostics to stdout")]
+    #[arg(long, help = "Prints diagnostics to stdout\n")]
     show_diagnostics: bool,
 
     #[arg(
         long,
-        help = "Only generate new files, do not overwrite existing files"
+        help = "Only generate new files, do not overwrite existing files\n"
     )]
     only_new: bool,
+
+    #[arg(
+        long,
+        help = r#"A regex to match against paths in the OpenAPI spec. Only paths that match will be included in the generated files.
+        
+Examples:
+  - `pets` will match any path that contains `pets`
+  - `^/pets$` will match only the `/pets` path
+  - `\{petId\}` will match any path that contains a parameter named `petId`
+  - `/export$` will match any path that ends with `/export`
+"#
+    )]
+    include_paths: Option<String>,
+
+    #[arg(
+        long,
+        help = r#"A regex to match against status codes in the OpenAPI spec. Only status codes that match will be included in the generated files.
+
+Examples:
+  - `200` will match only 200 status codes
+  - `200|400` will match 200 and 400 status codes
+  - `^2[0-9]{2}$` will match all 2xx status codes
+  - `[24]0[04]` will match 200, 204, 400, and 404 status codes
+"#
+    )]
+    include_status_codes: Option<String>,
+
+    #[arg(
+        long,
+        help = r#"A regex to match against operationIDs in the OpenAPI spec. Only operationIDs that match will be included in the generated files. Specifying this option will filter out any operations that do not have an operationID.
+
+Examples:
+  - `Pets` will match any operationID that contains `Pets`
+  - `^findPets` will match only operationIDs that start with `findPets`
+  - `ById$` will match any operationID that ends with `ById`
+  - `updatePet|getPetById` will match any operationID that contains `updatePet` or `getPetById`
+"#
+    )]
+    include_operation_ids: Option<String>,
 }
 
 /// The struct used to capture output variables.
@@ -52,7 +91,9 @@ struct GenerateArgs {
 pub struct Output {
     pub expected_status_code: u16,
     pub name: String,
-    pub path: String,
+    pub hurl_path: String,
+    pub oas_path: String,
+    pub oas_operation_id: Option<String>,
     pub method: String,
     pub header_parameters: Vec<String>,
     pub query_parameters: Vec<String>,
@@ -318,6 +359,33 @@ Reference: {}"#, .context.path, .context.operation, .reference
     },
     #[error(
         r#"
+----------------------------
+Malformed --include-paths Regex
+
+Message: Failed to parse the provided regex.
+Source: {}"#, .source
+    )]
+    MalformedIncludePathsRegex { source: regex_lite::Error },
+    #[error(
+        r#"
+----------------------------
+Malformed --include-status-codes Regex
+
+Message: Failed to parse the provided regex.
+Source: {}"#, .source
+    )]
+    MalformedIncludeStatusCodesRegex { source: regex_lite::Error },
+    #[error(
+        r#"
+----------------------------
+Malformed --include-operation-ids Regex
+
+Message: Failed to parse the provided regex.
+Source: {}"#, .source
+    )]
+    MalformedIncludeOperationIDsRegex { source: regex_lite::Error },
+    #[error(
+        r#"
 -----------------------------
 Request Body Schema Cycle Detected
 
@@ -356,6 +424,38 @@ fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Generate(args) => {
+            if args.include_paths.is_some() {
+                let include_paths = args.include_paths.as_ref().unwrap();
+                let valid = regex_lite::Regex::new(&include_paths)
+                    .map_err(|e| HeaveError::MalformedIncludePathsRegex { source: e });
+                if valid.is_err() {
+                    let valid = valid.unwrap_err();
+                    println!("{}", valid);
+                    return Err(valid.into());
+                }
+            }
+            if args.include_status_codes.is_some() {
+                let include_status_codes = args.include_status_codes.as_ref().unwrap();
+                let valid = regex_lite::Regex::new(&include_status_codes)
+                    .map_err(|e| HeaveError::MalformedIncludeStatusCodesRegex { source: e });
+                if valid.is_err() {
+                    let valid = valid.unwrap_err();
+                    println!("{}", valid);
+                    return Err(valid.into());
+                }
+            }
+
+            if args.include_operation_ids.is_some() {
+                let include_operation_ids = args.include_operation_ids.as_ref().unwrap();
+                let valid = regex_lite::Regex::new(&include_operation_ids)
+                    .map_err(|e| HeaveError::MalformedIncludeOperationIDsRegex { source: e });
+                if valid.is_err() {
+                    let valid = valid.unwrap_err();
+                    println!("{}", valid);
+                    return Err(valid.into());
+                }
+            }
+
             let output_directory = args.output;
             let output_directory_metadata = std::fs::metadata(&output_directory)?;
             if !output_directory_metadata.is_dir() {
@@ -409,6 +509,27 @@ fn main() -> Result<(), Box<dyn Error>> {
 
             let result = generate(openapi);
             let mut final_outputs = result.outputs;
+            if args.include_paths.is_some() {
+                let include_paths = args.include_paths.unwrap();
+                // Regex was validated at the start of the CLI
+                let regex = regex_lite::Regex::new(&include_paths).unwrap();
+                final_outputs = filter_include_paths_outputs(regex, final_outputs);
+            }
+
+            if args.include_status_codes.is_some() {
+                let include_status_codes = args.include_status_codes.unwrap();
+                // Regex was validated at the start of the CLI
+                let regex = regex_lite::Regex::new(&include_status_codes).unwrap();
+                final_outputs = filter_include_status_codes_outputs(regex, final_outputs);
+            }
+
+            if args.include_operation_ids.is_some() {
+                let include_operation_ids = args.include_operation_ids.unwrap();
+                // Regex was validated at the start of the CLI
+                let regex = regex_lite::Regex::new(&include_operation_ids).unwrap();
+                final_outputs = filter_include_operation_ids_outputs(regex, final_outputs);
+            }
+
             if args.only_new {
                 let existing_files: Vec<PathBuf> = std::fs::read_dir(&output_directory)?
                     .filter_map(|entry| {
@@ -444,6 +565,38 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 }
 
+fn filter_include_operation_ids_outputs(
+    regex: regex_lite::Regex,
+    outputs: Vec<Output>,
+) -> Vec<Output> {
+    outputs
+        .into_iter()
+        .filter(|o| {
+            if o.oas_operation_id.is_none() {
+                return false;
+            }
+            regex.is_match(&o.oas_operation_id.as_ref().unwrap())
+        })
+        .collect()
+}
+
+fn filter_include_status_codes_outputs(
+    regex: regex_lite::Regex,
+    outputs: Vec<Output>,
+) -> Vec<Output> {
+    outputs
+        .into_iter()
+        .filter(|o| regex.is_match(&o.expected_status_code.to_string()))
+        .collect()
+}
+
+fn filter_include_paths_outputs(regex: regex_lite::Regex, outputs: Vec<Output>) -> Vec<Output> {
+    outputs
+        .into_iter()
+        .filter(|o| regex.is_match(&o.oas_path))
+        .collect()
+}
+
 fn filter_only_new_outputs(existing_files: &[PathBuf], outputs: Vec<Output>) -> Vec<Output> {
     outputs
         .into_iter()
@@ -474,7 +627,7 @@ fn write_outputs(
             context! {
                 name => output.name,
                 method => output.method,
-                path => output.path,
+                path => output.hurl_path,
                 expected_status_code => output.expected_status_code,
                 header_parameters => output.header_parameters,
                 query_parameters => output.query_parameters,
@@ -666,7 +819,9 @@ fn generate(openapi: openapiv3::OpenAPI) -> GenerateResult {
                     let output = Output {
                         expected_status_code: *code,
                         name,
-                        path: path.to_string().replace("{", "{{").replace("}", "}}"),
+                        hurl_path: path.to_string().replace("{", "{{").replace("}", "}}"),
+                        oas_path: path.to_string(),
+                        oas_operation_id: operation.operation_id.clone(),
                         method: method.to_string().to_uppercase(),
                         header_parameters: header_parameters.clone(),
                         query_parameters: query_parameters.clone(),
@@ -1383,7 +1538,9 @@ mod tests {
             name: "file1.hurl".to_string(),
             method: "GET".to_string(),
             expected_status_code: 0,
-            path: "".to_string(),
+            hurl_path: "".to_string(),
+            oas_path: "".to_string(),
+            oas_operation_id: None,
             header_parameters: vec![],
             query_parameters: vec![],
             asserts: vec![],
@@ -1401,5 +1558,159 @@ mod tests {
         let filtered = crate::filter_only_new_outputs(&existing_files, outputs);
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered.get(0).unwrap().name, "file2.hurl");
+    }
+
+    #[test]
+    fn filter_include_paths_outputs() {
+        let regex = regex_lite::Regex::new("^/documents$").unwrap();
+        let out1 = Output {
+            name: "get_documents_200.hurl".to_string(),
+            method: "GET".to_string(),
+            expected_status_code: 200,
+            hurl_path: "".to_string(),
+            oas_path: "/documents".to_string(),
+            oas_operation_id: None,
+            header_parameters: vec![],
+            query_parameters: vec![],
+            asserts: vec![],
+            request_body_parameter: "".to_string(),
+        };
+        let out2 = Output {
+            name: "get_document_by_id_200.hurl".to_string(),
+            oas_path: "/documents/{documentId}".to_string(),
+            ..out1.clone()
+        };
+        let outputs = vec![out1, out2];
+        let filtered = crate::filter_include_paths_outputs(regex, outputs);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered.get(0).unwrap().name, "get_documents_200.hurl");
+    }
+
+    #[test]
+    fn filter_include_status_codes_outputs() {
+        let out1 = Output {
+            name: "get_documents_200.hurl".to_string(),
+            method: "GET".to_string(),
+            expected_status_code: 200,
+            hurl_path: "".to_string(),
+            oas_path: "/documents".to_string(),
+            oas_operation_id: None,
+            header_parameters: vec![],
+            query_parameters: vec![],
+            asserts: vec![],
+            request_body_parameter: "".to_string(),
+        };
+        let out2 = Output {
+            name: "get_document_by_id_400.hurl".to_string(),
+            expected_status_code: 400,
+            ..out1.clone()
+        };
+        let out3 = Output {
+            name: "get_document_by_id_401.hurl".to_string(),
+            expected_status_code: 401,
+            ..out1.clone()
+        };
+        let out4 = Output {
+            name: "get_document_by_id_403.hurl".to_string(),
+            expected_status_code: 403,
+            ..out1.clone()
+        };
+        let out5 = Output {
+            name: "get_document_by_id_404.hurl".to_string(),
+            expected_status_code: 404,
+            ..out1.clone()
+        };
+        let outputs = vec![
+            out1.clone(),
+            out2.clone(),
+            out3.clone(),
+            out4.clone(),
+            out5.clone(),
+        ];
+        let regexes = vec![
+            regex_lite::Regex::new("^2\\d{2}$").unwrap(),
+            regex_lite::Regex::new("^4\\d{2}$").unwrap(),
+            regex_lite::Regex::new("^200|400").unwrap(),
+            regex_lite::Regex::new("^2[0-9]{2}$").unwrap(),
+            regex_lite::Regex::new("[24]0[04]").unwrap(),
+        ];
+        let expected_outputs = vec![
+            vec![&out1],
+            vec![&out2, &out3, &out4, &out5],
+            vec![&out1, &out2],
+            vec![&out1],
+            vec![&out1, &out2, &out5],
+        ];
+        for (regex, expected_output) in regexes.iter().zip(expected_outputs.iter()) {
+            let filtered =
+                crate::filter_include_status_codes_outputs(regex.clone(), outputs.clone());
+            assert_eq!(filtered.len(), expected_output.len());
+            for (i, output) in filtered.iter().enumerate() {
+                assert_eq!(output.name, expected_output[i].name);
+            }
+        }
+    }
+
+    #[test]
+    fn filter_include_operation_ids_outputs() {
+        let out1 = Output {
+            name: "addPet_200.hurl".to_string(),
+            method: "".to_string(),
+            expected_status_code: 200,
+            hurl_path: "".to_string(),
+            oas_path: "".to_string(),
+            oas_operation_id: None,
+            header_parameters: vec![],
+            query_parameters: vec![],
+            asserts: vec![],
+            request_body_parameter: "".to_string(),
+        };
+        let out2 = Output {
+            name: "updatePet_200.hurl".to_string(),
+            oas_operation_id: Some("updatePet".to_string()),
+            ..out1.clone()
+        };
+        let out3 = Output {
+            name: "findPetsByStatus_200.hurl".to_string(),
+            oas_operation_id: Some("findPetsByStatus".to_string()),
+            ..out1.clone()
+        };
+        let out4 = Output {
+            name: "findPetsByTags_200.hurl".to_string(),
+            oas_operation_id: Some("findPetsByTags".to_string()),
+            ..out1.clone()
+        };
+        let out5 = Output {
+            name: "getPetById_200.hurl".to_string(),
+            oas_operation_id: Some("getPetById".to_string()),
+            ..out1.clone()
+        };
+        let outputs = vec![
+            out1.clone(),
+            out2.clone(),
+            out3.clone(),
+            out4.clone(),
+            out5.clone(),
+        ];
+        let regexes = vec![
+            regex_lite::Regex::new("Pets").unwrap(),
+            regex_lite::Regex::new("^findPets").unwrap(),
+            regex_lite::Regex::new("ById$").unwrap(),
+            regex_lite::Regex::new("updatePet|getPetById").unwrap(),
+        ];
+        let expected_outputs = vec![
+            vec![&out3, &out4],
+            vec![&out3, &out4],
+            vec![&out5],
+            vec![&out2, &out5],
+        ];
+        for (regex, expected_output) in regexes.iter().zip(expected_outputs.iter()) {
+            let filtered =
+                crate::filter_include_operation_ids_outputs(regex.clone(), outputs.clone());
+            assert_eq!(filtered.len(), expected_output.len());
+            for (i, output) in filtered.iter().enumerate() {
+                assert_eq!(output.name, expected_output[i].name);
+            }
+        }
     }
 }

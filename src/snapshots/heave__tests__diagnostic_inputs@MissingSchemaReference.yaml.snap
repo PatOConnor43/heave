@@ -7,7 +7,11 @@ GenerateResult {
         Output {
             expected_status_code: 200,
             name: "addPet_200.hurl",
-            path: "/pets",
+            hurl_path: "/pets",
+            oas_path: "/pets",
+            oas_operation_id: Some(
+                "addPet",
+            ),
             method: "POST",
             header_parameters: [],
             query_parameters: [],
