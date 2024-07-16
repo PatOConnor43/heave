@@ -1375,7 +1375,10 @@ mod tests {
 
     #[test]
     fn filter_only_new_outputs() {
-        let existing_files = vec![PathBuf::from("file1.hurl"), PathBuf::from("file3.hurl")];
+        let existing_files = vec![
+            PathBuf::from("output/file1.hurl"),
+            PathBuf::from("output/file3.hurl"),
+        ];
         let out1 = Output {
             name: "file1.hurl".to_string(),
             method: "GET".to_string(),
