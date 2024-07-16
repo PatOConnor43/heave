@@ -603,7 +603,7 @@ fn filter_only_new_outputs(existing_files: &[PathBuf], outputs: Vec<Output>) -> 
         .filter(|o| {
             !existing_files.iter().any(|p| {
                 let output_file_name = PathBuf::from(&o.name);
-                *p == output_file_name
+                p.ends_with(&output_file_name)
             })
         })
         .collect()
@@ -849,6 +849,11 @@ fn generate_assert_from_schema(
     is_required: bool,
     diagnostic_context: &DiagnosticContext,
 ) -> (Vec<String>, Vec<HeaveError>) {
+    // We don't need to generate an assert for a field that is write only
+    if schema.schema_data.write_only {
+        return (vec![], vec![]);
+    }
+
     // Cycle Detection
     let mut parts = jsonpath.split('.').rev().peekable();
     while parts.peek().is_some() {
@@ -1133,6 +1138,10 @@ fn generate_request_body_from_schema(
     diagnostic_context: &DiagnosticContext,
     jsonpath: &str,
 ) -> (Option<String>, Vec<HeaveError>) {
+    // We don't need to include this in the request body if it's read only
+    if schema.schema_data.read_only {
+        return (None, vec![]);
+    }
     // Cycle Detection
     let mut parts = jsonpath.split('.').rev().peekable();
     while parts.peek().is_some() {
@@ -1475,6 +1484,34 @@ mod tests {
     }
 
     #[test]
+    fn read_only() -> Result<(), Box<dyn Error>> {
+        let mut settings = insta::Settings::clone_current();
+        settings.set_omit_expression(true);
+        settings.bind(|| {
+            glob!("snapshots/read_only/*.yaml", |path| {
+                let input: OpenAPI = openapi_from_yaml!(&path);
+                let result = generate(input);
+                assert_debug_snapshot!(result);
+            });
+        });
+        Ok(())
+    }
+
+    #[test]
+    fn write_only() -> Result<(), Box<dyn Error>> {
+        let mut settings = insta::Settings::clone_current();
+        settings.set_omit_expression(true);
+        settings.bind(|| {
+            glob!("snapshots/write_only/*.yaml", |path| {
+                let input: OpenAPI = openapi_from_yaml!(&path);
+                let result = generate(input);
+                assert_debug_snapshot!(result);
+            });
+        });
+        Ok(())
+    }
+
+    #[test]
     fn allof_inputs() -> Result<(), Box<dyn Error>> {
         let openapi: OpenAPI = openapi_from_yaml!("src/snapshots/allof/petstore.yaml");
         let output_directory = PathBuf::from_str("src/snapshots/allof")?;
@@ -1493,7 +1530,10 @@ mod tests {
 
     #[test]
     fn filter_only_new_outputs() {
-        let existing_files = vec![PathBuf::from("file1.hurl"), PathBuf::from("file3.hurl")];
+        let existing_files = vec![
+            PathBuf::from("output/file1.hurl"),
+            PathBuf::from("output/file3.hurl"),
+        ];
         let out1 = Output {
             name: "file1.hurl".to_string(),
             method: "GET".to_string(),
