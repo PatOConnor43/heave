@@ -1,0 +1,19 @@
+---
+source: src/main.rs
+info:
+  program: heave
+  args:
+    - variables
+    - src/snapshots/petstore/petstore.json
+---
+success: true
+exit_code: 0
+----- stdout -----
+authorization=
+baseurl=
+orderId=
+petId=
+username=
+
+----- stderr -----
+

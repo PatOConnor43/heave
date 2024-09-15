@@ -19,6 +19,9 @@ enum Commands {
 
     #[command(about = "Print the default template")]
     Template,
+
+    #[command(about = "variables")]
+    Variables(VariablesArgs),
 }
 
 #[derive(Args, Debug)]
@@ -31,7 +34,10 @@ struct GenerateArgs {
     #[arg(help = "The directory where generated hurl files will be created\n")]
     output: PathBuf,
 
-    #[arg(long, help = "Prints the default template\n")]
+    #[arg(
+        long,
+        help = "Supply a custom minijinja template to use when generating hurl files\n"
+    )]
     template: Option<PathBuf>,
 
     #[arg(long, help = "Prints diagnostics to stdout\n")]
@@ -83,6 +89,20 @@ Examples:
     include_operation_ids: Option<String>,
 }
 
+#[derive(Args, Debug)]
+struct VariablesArgs {
+    #[arg(
+        help = "The path to an OpenAPI spec. This spec must not contain references to other files\n"
+    )]
+    path: PathBuf,
+
+    #[arg(
+        long,
+        help = "Supply a custom minijinja template to use when generating hurl files\n"
+    )]
+    template: Option<PathBuf>,
+}
+
 /// The struct used to capture output variables.
 ///
 /// Each field defined in this struct will be available to the template. The template uses the
@@ -107,13 +127,14 @@ pub struct GenerateResult {
     diagnostics: Vec<HeaveError>,
 }
 
+#[derive(Eq, PartialEq)]
 pub enum InputSpecExtension {
     Json,
     Yaml,
 }
 
-const DEFAULT_HURL_TEMPLATE: &str = r#"{{ method }} {{ '{{ baseurl }}' }}{{ path | safe }}
-Authorization: Bearer {{ '{{ authorization }}' }}
+const DEFAULT_HURL_TEMPLATE: &str = r#"{{ method }} {{'{{ baseurl }}'}}{{ path | safe }}
+Authorization: Bearer {{'{{ authorization }}'}}
 Prefer: code={{ expected_status_code }}
 {% for header in header_parameters %}{{ header }}:
 {% endfor %}{% if query_parameters %}
@@ -130,7 +151,13 @@ HTTP {{ expected_status_code }}
 
 #[derive(Debug, thiserror::Error)]
 pub enum HeaveError {
-    #[error("Error parsing custom minijinja template")]
+    #[error("Template could not be opened: {source}")]
+    InvalidTemplate {
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("Error parsing custom minijinja template: {source}")]
     JinjaError {
         #[source]
         source: minijinja::Error,
@@ -419,8 +446,15 @@ pub struct DiagnosticContext {
     operation: String,
     path: String,
 }
-
 fn main() -> Result<(), Box<dyn Error>> {
+    let exit: Result<(), Box<dyn Error>> = inner_main();
+    if let Err(e) = exit {
+        println!("{}", e);
+    };
+    Ok(())
+}
+
+fn inner_main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Generate(args) => {
@@ -430,7 +464,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                     .map_err(|e| HeaveError::MalformedIncludePathsRegex { source: e });
                 if valid.is_err() {
                     let valid = valid.unwrap_err();
-                    println!("{}", valid);
                     return Err(valid.into());
                 }
             }
@@ -440,7 +473,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                     .map_err(|e| HeaveError::MalformedIncludeStatusCodesRegex { source: e });
                 if valid.is_err() {
                     let valid = valid.unwrap_err();
-                    println!("{}", valid);
                     return Err(valid.into());
                 }
             }
@@ -451,7 +483,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                     .map_err(|e| HeaveError::MalformedIncludeOperationIDsRegex { source: e });
                 if valid.is_err() {
                     let valid = valid.unwrap_err();
-                    println!("{}", valid);
                     return Err(valid.into());
                 }
             }
@@ -562,6 +593,72 @@ fn main() -> Result<(), Box<dyn Error>> {
             println!("{}", DEFAULT_HURL_TEMPLATE);
             Ok(())
         }
+        Commands::Variables(args) => {
+            let input_path = &args.path;
+            let input_metadata = std::fs::metadata(&input_path)?;
+            if !input_metadata.is_file() {
+                return Err("Input spec must be a file".into());
+            }
+
+            let template = match &args.template {
+                Some(t) => {
+                    //let metadata = std::fs::metadata(&t)?;
+                    //dbg!(&metadata.is_symlink());
+                    //if !metadata.is_file() {
+                    //    return Err("Template must be a file".into());
+                    //}
+                    let template_content = std::fs::read_to_string(t);
+                    let template_content = template_content
+                        .map_err(|source| HeaveError::InvalidTemplate { source })?;
+                    template_content
+                }
+                None => DEFAULT_HURL_TEMPLATE.to_string(),
+            };
+
+            // This is used as a mechanism to validate that the syntax of the template parses
+            // correctly before doing more work. The function that writes the output creates its
+            // own minijinja Environment.
+            let mut jinja_env = Environment::new();
+            jinja_env
+                .add_template("output.hurl", &template)
+                .map_err(|e| HeaveError::JinjaError { source: e })?;
+            let input_extension = match &input_path.extension() {
+                Some(ext) => match ext.to_str() {
+                    Some("json") => Ok(InputSpecExtension::Json),
+                    Some("yaml") => Ok(InputSpecExtension::Yaml),
+                    _ => Err("Input spec must be json or yaml file"),
+                },
+                None => Err("Input spec must be json or yaml file"),
+            }?;
+
+            let content = std::fs::read_to_string(&input_path)?;
+            let openapi: OpenAPI = match input_extension {
+                InputSpecExtension::Json => {
+                    serde_json::from_str(&content).expect("Could not deserialize input as json")
+                }
+                InputSpecExtension::Yaml => {
+                    serde_yaml::from_str(&content).expect("Could not deserialize input as yaml")
+                }
+            };
+
+            let result = generate(openapi);
+            let rendered_outputs = write_outputs_to_vec(&result.outputs, &template)?;
+            let regex =
+                regex_lite::Regex::new(r"\{\{\s*(\w+)\s*\}\}").expect("Failed to compile regex");
+            let mut vars = rendered_outputs
+                .iter()
+                .map(|o| regex.captures_iter(o))
+                .flatten()
+                .filter_map(|c| c.get(1))
+                .map(|c| c.as_str().to_string())
+                .unique()
+                .collect::<Vec<String>>();
+            vars.sort();
+            let s = vars.iter().map(|v| format!("{}=", v)).join("\n");
+            println!("{}", s);
+
+            Ok(())
+        }
     }
 }
 
@@ -638,6 +735,29 @@ fn write_outputs(
         )?;
     }
     Ok(())
+}
+
+fn write_outputs_to_vec(outputs: &[Output], template: &str) -> Result<Vec<String>, Box<dyn Error>> {
+    let mut jinja_env = Environment::new();
+    // The content of this template should have already been validated
+    jinja_env.add_template("output.hurl", &template)?;
+    let template = jinja_env.get_template("output.hurl")?;
+    let mut rendered = vec![];
+
+    for output in outputs.iter() {
+        let output_string = template.render(context! {
+            name => output.name,
+            method => output.method,
+            path => output.hurl_path,
+            expected_status_code => output.expected_status_code,
+            header_parameters => output.header_parameters,
+            query_parameters => output.query_parameters,
+            asserts => output.asserts,
+            request_body_parameter => output.request_body_parameter,
+        })?;
+        rendered.push(output_string);
+    }
+    Ok(rendered)
 }
 
 fn generate(openapi: openapiv3::OpenAPI) -> GenerateResult {
@@ -1406,6 +1526,7 @@ mod tests {
     use std::{error::Error, path::PathBuf, str::FromStr};
 
     use insta::{assert_debug_snapshot, assert_snapshot, glob};
+    use insta_cmd::{assert_cmd_snapshot, get_cargo_bin};
     use openapiv3::OpenAPI;
 
     use crate::{generate, write_outputs, Output, DEFAULT_HURL_TEMPLATE};
@@ -1452,6 +1573,36 @@ mod tests {
             }
         });
 
+        Ok(())
+    }
+
+    #[test]
+    fn petstore_variables() -> Result<(), Box<dyn Error>> {
+        insta::allow_duplicates! {
+        let mut cmd = std::process::Command::new(get_cargo_bin("heave"));
+        cmd.arg("variables")
+            .arg("src/snapshots/petstore/petstore.yaml");
+        assert_cmd_snapshot!(cmd);
+        let mut cmd = std::process::Command::new(get_cargo_bin("heave"));
+        cmd.arg("variables")
+            .arg("src/snapshots/petstore/petstore.json");
+        assert_cmd_snapshot!(cmd);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn petstore_variables_with_template() -> Result<(), Box<dyn Error>> {
+        let mut cmd = std::process::Command::new("bash");
+        cmd.arg("-c").arg(format!(
+            "{} {} {} {} {}",
+            get_cargo_bin("heave").to_str().unwrap(),
+            "variables",
+            "src/snapshots/petstore/petstore.yaml",
+            "--template",
+            "<(echo '{{ path }}')"
+        ));
+        assert_cmd_snapshot!(cmd);
         Ok(())
     }
 

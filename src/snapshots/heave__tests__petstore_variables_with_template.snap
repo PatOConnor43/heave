@@ -1,0 +1,17 @@
+---
+source: src/main.rs
+info:
+  program: bash
+  args:
+    - "-c"
+    - "/Users/patrickoconnor/workspace/heave/target/debug/heave variables src/snapshots/petstore/petstore.yaml --template <(echo '{{ path }}')"
+---
+success: true
+exit_code: 0
+----- stdout -----
+orderId=
+petId=
+username=
+
+----- stderr -----
+
