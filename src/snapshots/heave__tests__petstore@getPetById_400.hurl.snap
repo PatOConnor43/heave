@@ -1,0 +1,10 @@
+---
+source: src/main.rs
+input_file: src/snapshots/petstore/getPetById_400.hurl
+---
+GET {{ baseurl }}/pet/{{petId}}
+Authorization: Bearer {{ authorization }}
+Prefer: code=400
+
+HTTP 400
+

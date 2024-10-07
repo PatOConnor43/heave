@@ -1,0 +1,14 @@
+---
+source: src/main.rs
+input_file: src/snapshots/petstore/findPetsByStatus_400.hurl
+---
+GET {{ baseurl }}/pet/findByStatus
+Authorization: Bearer {{ authorization }}
+Prefer: code=400
+
+[QueryStringParams]
+status:
+
+
+HTTP 400
+

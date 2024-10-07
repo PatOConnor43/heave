@@ -1,0 +1,15 @@
+---
+source: src/main.rs
+input_file: src/snapshots/petstore/updatePetWithForm_405.hurl
+---
+POST {{ baseurl }}/pet/{{petId}}
+Authorization: Bearer {{ authorization }}
+Prefer: code=405
+
+[QueryStringParams]
+name:
+status:
+
+
+HTTP 405
+

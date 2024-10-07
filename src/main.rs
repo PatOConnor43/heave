@@ -2,7 +2,10 @@ use clap::{Args, Parser, Subcommand};
 use itertools::Itertools;
 use minijinja::{context, Environment};
 use openapiv3::{MediaType, OpenAPI, ReferenceOr};
-use std::{error::Error, path::PathBuf};
+use std::{
+    error::Error,
+    path::{Path, PathBuf},
+};
 
 /// Program to generate hurl files from openapi schemas
 #[derive(Parser, Debug)]
@@ -225,16 +228,6 @@ Operation: {}"#, .context.path, .context.operation,
     MissingApplicationJsonRequestBodyMediaType { context: DiagnosticContext },
     #[error(
         r#"
-------------------------------------------
-MissingApplicationJsonResponseBodyMediaType
-
-Message: Missing application/json MediaType for ResponseBody.
-Path: {}
-Operation: {}"#, .context.path, .context.operation,
-    )]
-    MissingApplicationJsonResponseBodyMediaType { context: DiagnosticContext },
-    #[error(
-        r#"
 -----------------------------------
 MissingSchemaDefinitionForMediaType
 
@@ -426,7 +419,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         Commands::Generate(args) => {
             if args.include_paths.is_some() {
                 let include_paths = args.include_paths.as_ref().unwrap();
-                let valid = regex_lite::Regex::new(&include_paths)
+                let valid = regex_lite::Regex::new(include_paths)
                     .map_err(|e| HeaveError::MalformedIncludePathsRegex { source: e });
                 if valid.is_err() {
                     let valid = valid.unwrap_err();
@@ -436,7 +429,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             if args.include_status_codes.is_some() {
                 let include_status_codes = args.include_status_codes.as_ref().unwrap();
-                let valid = regex_lite::Regex::new(&include_status_codes)
+                let valid = regex_lite::Regex::new(include_status_codes)
                     .map_err(|e| HeaveError::MalformedIncludeStatusCodesRegex { source: e });
                 if valid.is_err() {
                     let valid = valid.unwrap_err();
@@ -447,7 +440,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
             if args.include_operation_ids.is_some() {
                 let include_operation_ids = args.include_operation_ids.as_ref().unwrap();
-                let valid = regex_lite::Regex::new(&include_operation_ids)
+                let valid = regex_lite::Regex::new(include_operation_ids)
                     .map_err(|e| HeaveError::MalformedIncludeOperationIDsRegex { source: e });
                 if valid.is_err() {
                     let valid = valid.unwrap_err();
@@ -464,13 +457,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 
             let template = match &args.template {
                 Some(t) => {
-                    let metadata = std::fs::metadata(&t)?;
+                    let metadata = std::fs::metadata(t)?;
                     if !metadata.is_file() {
                         return Err("Template must be a file".into());
                     }
                     let template_content = std::fs::read_to_string(t);
-                    let template_content = template_content.unwrap();
-                    template_content
+                    template_content.unwrap()
                 }
                 None => DEFAULT_HURL_TEMPLATE.to_string(),
             };
@@ -484,7 +476,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .map_err(|e| HeaveError::JinjaError { source: e })?;
 
             let input_path = &args.path;
-            let input_metadata = std::fs::metadata(&input_path)?;
+            let input_metadata = std::fs::metadata(input_path)?;
             if !input_metadata.is_file() {
                 return Err("Input spec must be a file".into());
             }
@@ -497,7 +489,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 None => Err("Input spec must be json or yaml file"),
             }?;
 
-            let content = std::fs::read_to_string(&input_path)?;
+            let content = std::fs::read_to_string(input_path)?;
             let openapi: OpenAPI = match input_extension {
                 InputSpecExtension::Json => {
                     serde_json::from_str(&content).expect("Could not deserialize input as json")
@@ -552,7 +544,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
             if args.show_diagnostics {
                 result.diagnostics.iter().for_each(|d| println!("{}", d));
-            } else if result.diagnostics.len() > 0 {
+            } else if !result.diagnostics.is_empty() {
                 eprintln!("Diagnostics are available. Re-run your previous command with `--show-diagnostics` to see them.")
             }
 
@@ -575,7 +567,7 @@ fn filter_include_operation_ids_outputs(
             if o.oas_operation_id.is_none() {
                 return false;
             }
-            regex.is_match(&o.oas_operation_id.as_ref().unwrap())
+            regex.is_match(o.oas_operation_id.as_ref().unwrap())
         })
         .collect()
 }
@@ -612,11 +604,12 @@ fn filter_only_new_outputs(existing_files: &[PathBuf], outputs: Vec<Output>) -> 
 fn write_outputs(
     outputs: &[Output],
     template: &str,
-    output_directory: &PathBuf,
+    output_directory: &Path,
 ) -> Result<(), Box<dyn Error>> {
+    let output_directory = output_directory.to_path_buf();
     let mut jinja_env = Environment::new();
     // The content of this template should have already been validated
-    jinja_env.add_template("output.hurl", &template)?;
+    jinja_env.add_template("output.hurl", template)?;
     let template = jinja_env.get_template("output.hurl")?;
 
     for output in outputs.iter() {
@@ -712,7 +705,7 @@ fn generate(openapi: openapiv3::OpenAPI) -> GenerateResult {
 
         while let Some(request_body) = &operation.request_body {
             let (request_body, mut inner_diagnostics) =
-                resolve_request_body(&openapi, &request_body, &context);
+                resolve_request_body(&openapi, request_body, &context);
             diagnostics.append(&mut inner_diagnostics);
             if request_body.is_none() {
                 break;
@@ -740,14 +733,14 @@ fn generate(openapi: openapiv3::OpenAPI) -> GenerateResult {
                 break;
             }
             let schema = schema.as_ref().unwrap();
-            let (schema, mut inner_diagnostics) = resolve_schema(&openapi, &schema, &context);
+            let (schema, mut inner_diagnostics) = resolve_schema(&openapi, schema, &context);
             diagnostics.append(&mut inner_diagnostics);
             if schema.is_none() {
                 break;
             }
             let schema = schema.unwrap();
             let request_body_parameter_tuple =
-                generate_request_body_from_schema(&openapi, &schema, None, &context, "$");
+                generate_request_body_from_schema(&openapi, schema, None, &context, "$");
             request_body_parameter = request_body_parameter_tuple.0;
             let mut inner_diagnostics = request_body_parameter_tuple.1;
             diagnostics.append(&mut inner_diagnostics);
@@ -786,9 +779,21 @@ fn generate(openapi: openapiv3::OpenAPI) -> GenerateResult {
                         }
                     }
                     if media_type.is_none() {
-                        diagnostics.push(HeaveError::MissingApplicationJsonResponseBodyMediaType {
-                            context: context.clone(),
-                        });
+                        let output = Output {
+                            expected_status_code: *code,
+                            name,
+                            hurl_path: path.to_string().replace("{", "{{").replace("}", "}}"),
+                            oas_path: path.to_string(),
+                            oas_operation_id: operation.operation_id.clone(),
+                            method: method.to_string().to_uppercase(),
+                            header_parameters: header_parameters.clone(),
+                            query_parameters: query_parameters.clone(),
+                            asserts: vec![],
+                            request_body_parameter: request_body_parameter
+                                .clone()
+                                .unwrap_or("".to_string()),
+                        };
+                        outputs.push(output);
                         continue;
                     }
                     let schema = media_type.unwrap().schema.as_ref();
@@ -943,23 +948,19 @@ fn generate_assert_from_schema(
         openapiv3::SchemaKind::Type(schema_type) => {
             match schema_type {
                 openapiv3::Type::Boolean(_) => {
-                    asserts.push(is_required_formatter(&jsonpath, "isBoolean", is_required))
+                    asserts.push(is_required_formatter(jsonpath, "isBoolean", is_required))
                 }
                 openapiv3::Type::String(_) => {
-                    asserts.push(is_required_formatter(&jsonpath, "isString", is_required))
+                    asserts.push(is_required_formatter(jsonpath, "isString", is_required))
                 }
                 openapiv3::Type::Number(_) => {
-                    asserts.push(is_required_formatter(&jsonpath, "isNumber", is_required))
+                    asserts.push(is_required_formatter(jsonpath, "isNumber", is_required))
                 }
                 openapiv3::Type::Integer(_) => {
-                    asserts.push(is_required_formatter(&jsonpath, "isInteger", is_required))
+                    asserts.push(is_required_formatter(jsonpath, "isInteger", is_required))
                 }
                 openapiv3::Type::Array(a) => {
-                    asserts.push(is_required_formatter(
-                        &jsonpath,
-                        "isCollection",
-                        is_required,
-                    ));
+                    asserts.push(is_required_formatter(jsonpath, "isCollection", is_required));
                     let items = &a.items;
                     if items.is_none() {
                         return (asserts, diagnostics);
@@ -967,7 +968,7 @@ fn generate_assert_from_schema(
                     let items = items.as_ref().unwrap();
                     let unboxed = items.clone().unbox();
                     let (inner, mut inner_diagnostics) =
-                        resolve_schema(openapi, &unboxed, &diagnostic_context);
+                        resolve_schema(openapi, &unboxed, diagnostic_context);
                     diagnostics.append(&mut inner_diagnostics);
                     if inner.is_none() {
                         return (asserts, diagnostics);
@@ -991,11 +992,7 @@ fn generate_assert_from_schema(
                     diagnostics.append(&mut child_diagnostics);
                 }
                 openapiv3::Type::Object(ob) => {
-                    asserts.push(is_required_formatter(
-                        &jsonpath,
-                        "isCollection",
-                        is_required,
-                    ));
+                    asserts.push(is_required_formatter(jsonpath, "isCollection", is_required));
                     let properties = &ob.properties;
                     for (name, prop) in properties.iter() {
                         let unboxed = prop.clone().unbox();
@@ -1040,9 +1037,7 @@ fn resolve_schema<'a>(
 ) -> (Option<&'a openapiv3::Schema>, Vec<HeaveError>) {
     let mut diagnostics: Vec<HeaveError> = vec![];
     match schema {
-        ReferenceOr::Item(item) => {
-            return (Some(item), diagnostics);
-        }
+        ReferenceOr::Item(item) => (Some(item), diagnostics),
         ReferenceOr::Reference { reference } => {
             let schema_name = reference.split("#/components/schemas/").nth(1);
             if schema_name.is_none() {
@@ -1087,9 +1082,7 @@ fn resolve_request_body<'a>(
 ) -> (Option<&'a openapiv3::RequestBody>, Vec<HeaveError>) {
     let mut diagnostics: Vec<HeaveError> = vec![];
     match request_body {
-        ReferenceOr::Item(item) => {
-            return (Some(item), diagnostics);
-        }
+        ReferenceOr::Item(item) => (Some(item), diagnostics),
         ReferenceOr::Reference { reference } => {
             let request_body_name = reference.split("#/components/requestBodies/").nth(1);
             if request_body_name.is_none() {
@@ -1192,8 +1185,8 @@ fn generate_request_body_from_schema(
                 diagnostics.append(&mut inner_diagnostics);
                 if let Some(s) = all_of_schema {
                     let (request_body, mut inner_diagnostics) = generate_request_body_from_schema(
-                        &openapi,
-                        &s,
+                        openapi,
+                        s,
                         None,
                         diagnostic_context,
                         jsonpath,
@@ -1205,10 +1198,10 @@ fn generate_request_body_from_schema(
                         // empty JSON value and then flatten all the fields on to that single
                         // value. Any primitive fields can just be added directly to
                         // `child_request_bodies`.
-                        let mut j = serde_json::from_str::<serde_json::Value>(&body).unwrap();
+                        let mut j = serde_json::from_str::<serde_json::Value>(body).unwrap();
                         if j.is_object() {
                             let inner_map = flattened_object_fields.as_object_mut().unwrap();
-                            inner_map.append(&mut j.as_object_mut().unwrap());
+                            inner_map.append(j.as_object_mut().unwrap());
                         } else {
                             child_request_bodies.push(request_body);
                         }
@@ -1216,7 +1209,7 @@ fn generate_request_body_from_schema(
                 }
             }
             // Only include `flattened_object_fields` if we actually added anything to it.
-            if flattened_object_fields.as_object().unwrap().len() > 0 {
+            if !flattened_object_fields.as_object().unwrap().is_empty() {
                 child_request_bodies.push(Some(flattened_object_fields.to_string()));
             }
 
@@ -1228,7 +1221,7 @@ fn generate_request_body_from_schema(
 
             let stringified_body = child_request_bodies
                 .into_iter()
-                .filter_map(|body| body)
+                .flatten()
                 .collect::<Vec<String>>()
                 .join(",\n");
 
@@ -1264,7 +1257,7 @@ fn generate_request_body_from_schema(
             let single_property_formatter = |name: Option<String>, default: &str| -> String {
                 match name {
                     Some(name) => format!("\"{}\": {}", name, default),
-                    None => format!("{}", default),
+                    None => default.to_string(),
                 }
             };
             return match schema_type {
@@ -1283,7 +1276,7 @@ fn generate_request_body_from_schema(
                     for (name, prop) in properties.iter() {
                         let unboxed = prop.clone().unbox();
                         let (inner, mut inner_diagnostics) =
-                            resolve_schema(&openapi, &unboxed, diagnostic_context);
+                            resolve_schema(openapi, &unboxed, diagnostic_context);
                         diagnostics.append(&mut inner_diagnostics);
                         if inner.is_none() {
                             return (None, diagnostics);
@@ -1291,8 +1284,8 @@ fn generate_request_body_from_schema(
                         let inner = inner.unwrap();
                         let (request_body, mut inner_diagnostics) =
                             generate_request_body_from_schema(
-                                &openapi,
-                                &inner,
+                                openapi,
+                                inner,
                                 Some(name.to_string()),
                                 diagnostic_context,
                                 format!("{}.{}", jsonpath, name).as_ref(),
@@ -1302,7 +1295,7 @@ fn generate_request_body_from_schema(
                     }
                     let stringified_body = child_request_bodies
                         .into_iter()
-                        .filter_map(|body| body)
+                        .flatten()
                         .collect::<Vec<String>>()
                         .join(",\n");
                     return match name {
@@ -1321,7 +1314,7 @@ fn generate_request_body_from_schema(
                     let items = items.as_ref().unwrap();
                     let unboxed = items.clone().unbox();
                     let (inner, mut inner_diagnostics) =
-                        resolve_schema(&openapi, &unboxed, diagnostic_context);
+                        resolve_schema(openapi, &unboxed, diagnostic_context);
                     diagnostics.append(&mut inner_diagnostics);
                     if inner.is_none() {
                         return (None, diagnostics);
@@ -1329,8 +1322,8 @@ fn generate_request_body_from_schema(
                     let inner = inner.unwrap();
                     let (child_request_body, mut child_diagnostics) =
                         generate_request_body_from_schema(
-                            &openapi,
-                            &inner,
+                            openapi,
+                            inner,
                             None,
                             diagnostic_context,
                             format!("{}[]", jsonpath).as_ref(),
@@ -1361,9 +1354,7 @@ fn resolve_response<'a>(
 ) -> (Option<&'a openapiv3::Response>, Vec<HeaveError>) {
     let mut diagnostics = vec![];
     match response {
-        ReferenceOr::Item(item) => {
-            return (Some(item), diagnostics);
-        }
+        ReferenceOr::Item(item) => (Some(item), diagnostics),
         ReferenceOr::Reference { reference } => {
             let response_name = reference.split("#/components/responses/").nth(1);
             if response_name.is_none() {
@@ -1557,7 +1548,7 @@ mod tests {
         let outputs = vec![out1, out2, out3];
         let filtered = crate::filter_only_new_outputs(&existing_files, outputs);
         assert_eq!(filtered.len(), 1);
-        assert_eq!(filtered.get(0).unwrap().name, "file2.hurl");
+        assert_eq!(filtered.first().unwrap().name, "file2.hurl");
     }
 
     #[test]
@@ -1583,7 +1574,7 @@ mod tests {
         let outputs = vec![out1, out2];
         let filtered = crate::filter_include_paths_outputs(regex, outputs);
         assert_eq!(filtered.len(), 1);
-        assert_eq!(filtered.get(0).unwrap().name, "get_documents_200.hurl");
+        assert_eq!(filtered.first().unwrap().name, "get_documents_200.hurl");
     }
 
     #[test]
@@ -1634,7 +1625,7 @@ mod tests {
             regex_lite::Regex::new("^2[0-9]{2}$").unwrap(),
             regex_lite::Regex::new("[24]0[04]").unwrap(),
         ];
-        let expected_outputs = vec![
+        let expected_outputs = [
             vec![&out1],
             vec![&out2, &out3, &out4, &out5],
             vec![&out1, &out2],
@@ -1698,7 +1689,7 @@ mod tests {
             regex_lite::Regex::new("ById$").unwrap(),
             regex_lite::Regex::new("updatePet|getPetById").unwrap(),
         ];
-        let expected_outputs = vec![
+        let expected_outputs = [
             vec![&out3, &out4],
             vec![&out3, &out4],
             vec![&out5],
