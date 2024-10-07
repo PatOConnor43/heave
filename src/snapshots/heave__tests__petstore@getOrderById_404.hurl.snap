@@ -1,0 +1,10 @@
+---
+source: src/main.rs
+input_file: src/snapshots/petstore/getOrderById_404.hurl
+---
+GET {{ baseurl }}/store/order/{{orderId}}
+Authorization: Bearer {{ authorization }}
+Prefer: code=404
+
+HTTP 404
+

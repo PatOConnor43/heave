@@ -1,0 +1,10 @@
+---
+source: src/main.rs
+input_file: src/snapshots/petstore/deleteOrder_404.hurl
+---
+DELETE {{ baseurl }}/store/order/{{orderId}}
+Authorization: Bearer {{ authorization }}
+Prefer: code=404
+
+HTTP 404
+

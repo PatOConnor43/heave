@@ -1,0 +1,11 @@
+---
+source: src/main.rs
+input_file: src/snapshots/allof/deletePet_204.hurl
+---
+DELETE {{ baseurl }}/pet/{{petId}}
+Authorization: Bearer {{ authorization }}
+Prefer: code=204
+api_key:
+
+HTTP 204
+

@@ -1,0 +1,14 @@
+---
+source: src/main.rs
+input_file: src/snapshots/petstore/findPetsByTags_400.hurl
+---
+GET {{ baseurl }}/pet/findByTags
+Authorization: Bearer {{ authorization }}
+Prefer: code=400
+
+[QueryStringParams]
+tags:
+
+
+HTTP 400
+
