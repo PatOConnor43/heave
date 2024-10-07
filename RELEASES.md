@@ -1,3 +1,9 @@
+# Version 0.15.0 (2024-10-06)
+New Features:
+- Added support for generating files for responses that do not contain an application/json mimetype. Previously, heave would skip anything that wasn't application/json. However it seems useful to generate files for these and just skip generating any asserts.
+Chores:
+- Fixing some lints after upgrading Rust version
+
 # Version 0.14.0 (2024-07-16)
 New Features:
 - `--include-operation-ids`
