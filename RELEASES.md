@@ -1,3 +1,7 @@
+# Version 0.15.1 (2024-10-06)
+Chores:
+- Upgrading cargo dist to 0.21.1
+
 # Version 0.15.0 (2024-10-06)
 New Features:
 - Added support for generating files for responses that do not contain an application/json mimetype. Previously, heave would skip anything that wasn't application/json. However it seems useful to generate files for these and just skip generating any asserts.
