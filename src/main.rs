@@ -786,9 +786,21 @@ fn generate(openapi: openapiv3::OpenAPI) -> GenerateResult {
                         }
                     }
                     if media_type.is_none() {
-                        diagnostics.push(HeaveError::MissingApplicationJsonResponseBodyMediaType {
-                            context: context.clone(),
-                        });
+                        let output = Output {
+                            expected_status_code: *code,
+                            name,
+                            hurl_path: path.to_string().replace("{", "{{").replace("}", "}}"),
+                            oas_path: path.to_string(),
+                            oas_operation_id: operation.operation_id.clone(),
+                            method: method.to_string().to_uppercase(),
+                            header_parameters: header_parameters.clone(),
+                            query_parameters: query_parameters.clone(),
+                            asserts: vec![],
+                            request_body_parameter: request_body_parameter
+                                .clone()
+                                .unwrap_or("".to_string()),
+                        };
+                        outputs.push(output);
                         continue;
                     }
                     let schema = media_type.unwrap().schema.as_ref();
