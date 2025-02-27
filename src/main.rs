@@ -117,7 +117,6 @@ pub enum InputSpecExtension {
 
 const DEFAULT_HURL_TEMPLATE: &str = r#"{{ method }} {{ '{{ baseurl }}' }}{{ path | safe }}
 Authorization: Bearer {{ '{{ authorization }}' }}
-Prefer: code={{ expected_status_code }}
 {% for header in header_parameters %}{{ header }}:
 {% endfor %}{% if query_parameters %}
 [QueryStringParams]
