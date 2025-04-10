@@ -1,0 +1,16 @@
+---
+source: src/main.rs
+assertion_line: 1623
+input_file: src/snapshots/petstore_graphql/getPetById.hurl
+---
+POST {{ baseurl }}
+Authorization: Bearer {{ authorization }}
+```graphql
+query getPetById {
+  id
+  name
+  tag
+}
+
+```
+HTTP 200

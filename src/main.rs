@@ -19,13 +19,26 @@ struct Cli {
 enum Commands {
     #[command(about = "Generate hurl files from OpenAPI spec")]
     Generate(GenerateArgs),
+    // TODO Add template subcommand for OpenAPI and GraphQL
+}
 
-    #[command(about = "Print the default template")]
-    Template,
+#[derive(Debug, Subcommand)]
+enum GenerateCommands {
+    #[command(about = "Generate hurl files from OpenAPI spec")]
+    Openapi(GenerateOpenapiArgs),
+
+    #[command(about = "Generate hurl files from GraphQL schema")]
+    Graphql(GenerateGraphqlArgs),
 }
 
 #[derive(Args, Debug)]
 struct GenerateArgs {
+    #[command(subcommand)]
+    command: GenerateCommands,
+}
+
+#[derive(Args, Debug)]
+struct GenerateOpenapiArgs {
     #[arg(
         help = "The path to an OpenAPI spec. This spec must not contain references to other files\n"
     )]
@@ -86,6 +99,18 @@ Examples:
     include_operation_ids: Option<String>,
 }
 
+#[derive(Args, Debug)]
+struct GenerateGraphqlArgs {
+    #[arg(help = "The path to an GraphQL spec.\n")]
+    path: PathBuf,
+
+    #[arg(help = "The directory where generated hurl files will be created\n")]
+    output: PathBuf,
+
+    #[arg(long, help = "Prints the default template\n")]
+    template: Option<PathBuf>,
+}
+
 /// The struct used to capture output variables.
 ///
 /// Each field defined in this struct will be available to the template. The template uses the
@@ -115,6 +140,33 @@ pub enum InputSpecExtension {
     Yaml,
 }
 
+#[derive(Debug)]
+struct GraphQLQuery {
+    name: String,
+    arguments: Vec<GraphQLQueryArgument>,
+    return_type: Option<GraphQLQueryType>,
+}
+
+#[derive(Debug)]
+struct GraphQLQueryArgument {
+    name: String,
+    nullable: bool,
+    r#type: String,
+}
+
+#[derive(Debug)]
+struct GraphQLQueryType {
+    name: String,
+    fields: Vec<GraphQLQueryField>,
+}
+
+#[derive(Debug)]
+struct GraphQLQueryField {
+    name: String,
+    nullable: bool,
+    r#type: Option<GraphQLQueryType>,
+}
+
 const DEFAULT_HURL_TEMPLATE: &str = r#"{{ method }} {{ '{{ baseurl }}' }}{{ path | safe }}
 Authorization: Bearer {{ '{{ authorization }}' }}
 Prefer: code={{ expected_status_code }}
@@ -125,6 +177,18 @@ Prefer: code={{ expected_status_code }}
 {% endfor %}
 {% endif %}{{ request_body_parameter }}
 HTTP {{ expected_status_code }}
+{% if asserts %}
+[Asserts]
+{% for assert in asserts %}{{ assert }}
+{% endfor %}{% endif %}
+"#;
+
+const DEFAULT_GRAPH_HURL_TEMPLATE: &str = r#"POST {{ '{{ baseurl }}' }}
+Authorization: Bearer {{ '{{ authorization }}' }}
+```graphql
+{{ request_body_parameter }}
+```
+HTTP 200
 {% if asserts %}
 [Asserts]
 {% for assert in asserts %}{{ assert }}
@@ -416,145 +480,507 @@ pub struct DiagnosticContext {
 fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Generate(args) => {
-            if args.include_paths.is_some() {
-                let include_paths = args.include_paths.as_ref().unwrap();
-                let valid = regex_lite::Regex::new(include_paths)
-                    .map_err(|e| HeaveError::MalformedIncludePathsRegex { source: e });
-                if valid.is_err() {
-                    let valid = valid.unwrap_err();
-                    println!("{}", valid);
-                    return Err(valid.into());
-                }
+        Commands::Generate(generate_args) => match generate_args.command {
+            GenerateCommands::Openapi(openapi_args) => generate_openapi(openapi_args),
+            GenerateCommands::Graphql(graphql_args) => generate_graphql(graphql_args),
+        },
+    }
+}
+fn generate_graphql(args: GenerateGraphqlArgs) -> Result<(), Box<dyn Error>> {
+    let output_directory = args.output;
+    let output_directory_metadata = std::fs::metadata(&output_directory)?;
+    if !output_directory_metadata.is_dir() {
+        return Err("Output must be a directory".into());
+    }
+
+    let template = match &args.template {
+        Some(t) => {
+            let metadata = std::fs::metadata(t)?;
+            if !metadata.is_file() {
+                return Err("Template must be a file".into());
             }
-            if args.include_status_codes.is_some() {
-                let include_status_codes = args.include_status_codes.as_ref().unwrap();
-                let valid = regex_lite::Regex::new(include_status_codes)
-                    .map_err(|e| HeaveError::MalformedIncludeStatusCodesRegex { source: e });
-                if valid.is_err() {
-                    let valid = valid.unwrap_err();
-                    println!("{}", valid);
-                    return Err(valid.into());
-                }
-            }
-
-            if args.include_operation_ids.is_some() {
-                let include_operation_ids = args.include_operation_ids.as_ref().unwrap();
-                let valid = regex_lite::Regex::new(include_operation_ids)
-                    .map_err(|e| HeaveError::MalformedIncludeOperationIDsRegex { source: e });
-                if valid.is_err() {
-                    let valid = valid.unwrap_err();
-                    println!("{}", valid);
-                    return Err(valid.into());
-                }
-            }
-
-            let output_directory = args.output;
-            let output_directory_metadata = std::fs::metadata(&output_directory)?;
-            if !output_directory_metadata.is_dir() {
-                return Err("Output must be a directory".into());
-            }
-
-            let template = match &args.template {
-                Some(t) => {
-                    let metadata = std::fs::metadata(t)?;
-                    if !metadata.is_file() {
-                        return Err("Template must be a file".into());
-                    }
-                    let template_content = std::fs::read_to_string(t);
-                    template_content.unwrap()
-                }
-                None => DEFAULT_HURL_TEMPLATE.to_string(),
-            };
-
-            // This is used as a mechanism to validate that the syntax of the template parses
-            // correctly before doing more work. The function that writes the output creates its
-            // own minijinja Environment.
-            let mut jinja_env = Environment::new();
-            jinja_env
-                .add_template("output.hurl", &template)
-                .map_err(|e| HeaveError::JinjaError { source: e })?;
-
-            let input_path = &args.path;
-            let input_metadata = std::fs::metadata(input_path)?;
-            if !input_metadata.is_file() {
-                return Err("Input spec must be a file".into());
-            }
-            let input_extension = match &input_path.extension() {
-                Some(ext) => match ext.to_str() {
-                    Some("json") => Ok(InputSpecExtension::Json),
-                    Some("yaml") => Ok(InputSpecExtension::Yaml),
-                    _ => Err("Input spec must be json or yaml file"),
-                },
-                None => Err("Input spec must be json or yaml file"),
-            }?;
-
-            let content = std::fs::read_to_string(input_path)?;
-            let openapi: OpenAPI = match input_extension {
-                InputSpecExtension::Json => {
-                    serde_json::from_str(&content).expect("Could not deserialize input as json")
-                }
-                InputSpecExtension::Yaml => {
-                    serde_yaml::from_str(&content).expect("Could not deserialize input as yaml")
-                }
-            };
-
-            let result = generate(openapi);
-            let mut final_outputs = result.outputs;
-            if args.include_paths.is_some() {
-                let include_paths = args.include_paths.unwrap();
-                // Regex was validated at the start of the CLI
-                let regex = regex_lite::Regex::new(&include_paths).unwrap();
-                final_outputs = filter_include_paths_outputs(regex, final_outputs);
-            }
-
-            if args.include_status_codes.is_some() {
-                let include_status_codes = args.include_status_codes.unwrap();
-                // Regex was validated at the start of the CLI
-                let regex = regex_lite::Regex::new(&include_status_codes).unwrap();
-                final_outputs = filter_include_status_codes_outputs(regex, final_outputs);
-            }
-
-            if args.include_operation_ids.is_some() {
-                let include_operation_ids = args.include_operation_ids.unwrap();
-                // Regex was validated at the start of the CLI
-                let regex = regex_lite::Regex::new(&include_operation_ids).unwrap();
-                final_outputs = filter_include_operation_ids_outputs(regex, final_outputs);
-            }
-
-            if args.only_new {
-                let existing_files: Vec<PathBuf> = std::fs::read_dir(&output_directory)?
-                    .filter_map(|entry| {
-                        if entry.is_err() {
-                            return None;
-                        }
-                        if entry.as_ref().unwrap().file_type().is_err() {
-                            return None;
-                        }
-                        if !entry.as_ref().unwrap().file_type().unwrap().is_file() {
-                            return None;
-                        }
-                        Some(entry.unwrap().path())
-                    })
-                    .collect();
-                final_outputs = filter_only_new_outputs(&existing_files, final_outputs);
-            }
-
-            write_outputs(&final_outputs, &template, &output_directory)?;
-
-            if args.show_diagnostics {
-                result.diagnostics.iter().for_each(|d| println!("{}", d));
-            } else if !result.diagnostics.is_empty() {
-                eprintln!("Diagnostics are available. Re-run your previous command with `--show-diagnostics` to see them.")
-            }
-
-            Ok(())
+            let template_content = std::fs::read_to_string(t);
+            template_content.unwrap()
         }
-        Commands::Template => {
-            println!("{}", DEFAULT_HURL_TEMPLATE);
-            Ok(())
+        None => DEFAULT_GRAPH_HURL_TEMPLATE.to_string(),
+    };
+
+    // This is used as a mechanism to validate that the syntax of the template parses
+    // correctly before doing more work. The function that writes the output creates its
+    // own minijinja Environment.
+    let mut jinja_env = Environment::new();
+    jinja_env
+        .add_template("output.hurl", &template)
+        .map_err(|e| HeaveError::JinjaError { source: e })?;
+
+    let input_path = &args.path;
+    let input_metadata = std::fs::metadata(input_path)?;
+    if !input_metadata.is_file() {
+        return Err("Input spec must be a file".into());
+    }
+
+    let content = std::fs::read_to_string(input_path)?;
+    let graphql = graphql_parser::schema::parse_schema::<&str>(&content)?;
+    let result = generate_graphql_inner(&graphql);
+    write_outputs(&result.outputs, &template, &output_directory)?;
+    Ok(())
+}
+
+fn generate_graphql_inner<'a>(
+    graphql: &'a graphql_parser::schema::Document<&'a str>,
+) -> GenerateResult {
+    let mut outputs: Vec<Output> = vec![];
+    let queries = extract_queries(graphql);
+    dbg!(&queries);
+    for query in queries.iter() {
+        let graphql_body = build_body_for_query(&query);
+    }
+    //graphql.definitions.iter().for_each(|definition| {
+    //    if let graphql_parser::schema::Definition::TypeExtension(t_def) = definition {
+    //        if let graphql_parser::schema::TypeExtension::Object(o) = t_def {
+    //            if o.name == "Query" {
+    //                o.fields.iter().for_each(|f| {
+    //                    let name = f.name;
+    //                    let hurl_file_name = format!("{}.hurl", name);
+    //                    dbg!(&f.field_type.to_string());
+    //                    let return_definition = graphql.definitions.iter().find(|d| match d {
+    //                        graphql_parser::schema::Definition::TypeDefinition(t) => {
+    //                            if let graphql_parser::schema::TypeDefinition::Object(o) = t {
+    //                                if o.name == f.field_type.to_string().replace("!", "") {
+    //                                    return true;
+    //                                }
+    //                            } else if let graphql_parser::schema::TypeDefinition::Interface(i) =
+    //                                t
+    //                            {
+    //                                if i.name == f.field_type.to_string().replace("!", "") {
+    //                                    return true;
+    //                                }
+    //                            }
+    //                            false
+    //                        }
+    //                        _ => false,
+    //                    });
+    //                    if return_definition.is_none() {
+    //                        dbg!("not found: ", &f.field_type);
+    //                        return;
+    //                    }
+    //                    let return_definition = return_definition.unwrap();
+    //                    let fields = match return_definition {
+    //                        graphql_parser::schema::Definition::TypeDefinition(t) => {
+    //                            if let graphql_parser::schema::TypeDefinition::Object(o) = t {
+    //                                o.fields.iter().map(|f| f.name.clone()).collect_vec()
+    //                            } else if let graphql_parser::schema::TypeDefinition::Interface(i) =
+    //                                t
+    //                            {
+    //                                i.fields.iter().map(|f| f.name.clone()).collect_vec()
+    //                            } else {
+    //                                vec![]
+    //                            }
+    //                        }
+    //                        _ => vec![],
+    //                    };
+    //                    let request_body = format!("query {}{{ {} }}", name, fields.join("\n"));
+    //                    dbg!(&request_body);
+    //                    let r = graphql_parser::minify_query(request_body.to_string()).unwrap();
+    //                    let r = format!("{}", graphql_parser::parse_query::<String>(&r).unwrap());
+    //                    let output = Output {
+    //                        expected_status_code: 200,
+    //                        name: hurl_file_name.clone(),
+    //                        hurl_path: "".to_string(),
+    //                        oas_path: "".to_string(),
+    //                        oas_operation_id: None,
+    //                        method: "".to_string(),
+    //                        header_parameters: vec![],
+    //                        query_parameters: vec![],
+    //                        asserts: vec![],
+    //                        request_body_parameter: r,
+    //                    };
+    //                    outputs.push(output);
+    //                });
+    //            }
+    //        }
+    //    }
+    //});
+    GenerateResult {
+        outputs,
+        diagnostics: vec![],
+    }
+}
+
+fn build_body_for_query(query: &GraphQLQuery) -> String {
+    let mut body = "query {\n".to_string();
+    if query.arguments.len() == 0 {
+        body.push_str(format!("{} {{\n", query.name).as_str());
+    } else {
+        body.push_str(format!("{}(", query.name).as_str());
+    }
+    body
+}
+
+fn extract_queries<'a>(
+    graphql: &'a graphql_parser::schema::Document<'_, &'a str>,
+) -> Vec<GraphQLQuery> {
+    let mut queries: Vec<GraphQLQuery> = vec![];
+    for definition in graphql.definitions.iter() {
+        match definition {
+            graphql_parser::schema::Definition::TypeDefinition(type_definition) => {
+                if let graphql_parser::schema::TypeDefinition::Object(object_type) = type_definition
+                {
+                    if object_type.name == "Query" {
+                        for field in object_type.fields.iter() {
+                            let mut arguments: Vec<GraphQLQueryArgument> = vec![];
+                            for argument in field.arguments.iter() {
+                                let nullable = !matches!(
+                                    argument.value_type,
+                                    graphql_parser::query::Type::NonNullType(_)
+                                );
+                                let t = stringify_graphql_type(&argument.value_type);
+                                let arg = GraphQLQueryArgument {
+                                    name: argument.name.to_string(),
+                                    nullable,
+                                    r#type: t,
+                                };
+                                arguments.push(arg);
+                            }
+                            let return_type = find_type_by_name(
+                                graphql,
+                                field.field_type.to_string().replace("!", ""),
+                            );
+                            let query = GraphQLQuery {
+                                name: field.name.to_string(),
+                                arguments,
+                                return_type,
+                            };
+                            queries.push(query);
+                        }
+                    }
+                }
+            }
+            graphql_parser::schema::Definition::TypeExtension(type_extension) => {
+                if let graphql_parser::schema::TypeExtension::Object(object_type_extension) =
+                    type_extension
+                {
+                    if object_type_extension.name == "Query" {
+                        for field in object_type_extension.fields.iter() {
+                            let mut arguments: Vec<GraphQLQueryArgument> = vec![];
+                            for argument in field.arguments.iter() {
+                                let nullable = !matches!(
+                                    argument.value_type,
+                                    graphql_parser::query::Type::NonNullType(_)
+                                );
+                                let t = stringify_graphql_type(&argument.value_type);
+                                let arg = GraphQLQueryArgument {
+                                    name: argument.name.to_string(),
+                                    nullable,
+                                    r#type: t,
+                                };
+                                arguments.push(arg);
+                            }
+                            let return_type = find_type_by_name(
+                                graphql,
+                                field.field_type.to_string().replace("!", ""),
+                            );
+                            let query = GraphQLQuery {
+                                name: field.name.to_string(),
+                                arguments,
+                                return_type,
+                            };
+                            queries.push(query);
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
     }
+    queries
+}
+
+fn find_type_by_name<'a>(
+    graphql: &'a graphql_parser::schema::Document<'_, &'a str>,
+    type_name: String,
+) -> Option<GraphQLQueryType> {
+    for definition in graphql.definitions.iter() {
+        match definition {
+            graphql_parser::schema::Definition::TypeDefinition(type_definition) => {
+                match type_definition {
+                    graphql_parser::schema::TypeDefinition::Object(object_type) => {
+                        if object_type.name == type_name {
+                            let fields = object_type
+                                .fields
+                                .iter()
+                                .map(|f| GraphQLQueryField {
+                                    name: f.name.to_string(),
+                                    nullable: !matches!(
+                                        f.field_type,
+                                        graphql_parser::query::Type::NonNullType(_)
+                                    ),
+                                    // TODO handle recursion
+                                    r#type: find_type_by_name(
+                                        graphql,
+                                        f.field_type.to_string().replace("!", ""),
+                                    ),
+                                })
+                                .collect_vec();
+                            return Some(GraphQLQueryType {
+                                name: type_name,
+                                fields,
+                            });
+                        }
+                    }
+                    graphql_parser::schema::TypeDefinition::Scalar(scalar_type) => {
+                        if scalar_type.name == type_name {
+                            return Some(GraphQLQueryType {
+                                name: type_name,
+                                fields: vec![],
+                            });
+                        }
+                    }
+                    graphql_parser::schema::TypeDefinition::Interface(interface_type) => {
+                        if interface_type.name == type_name {
+                            let fields = interface_type
+                                .fields
+                                .iter()
+                                .map(|f| GraphQLQueryField {
+                                    name: f.name.to_string(),
+                                    nullable: !matches!(
+                                        f.field_type,
+                                        graphql_parser::query::Type::NonNullType(_)
+                                    ),
+                                    // TODO handle recursion
+                                    r#type: find_type_by_name(
+                                        graphql,
+                                        f.field_type.to_string().replace("!", ""),
+                                    ),
+                                })
+                                .collect_vec();
+                            return Some(GraphQLQueryType {
+                                name: type_name,
+                                fields,
+                            });
+                        }
+                    }
+                    graphql_parser::schema::TypeDefinition::Union(union_type) => {
+                        todo!();
+                    }
+                    graphql_parser::schema::TypeDefinition::Enum(enum_type) => {
+                        if enum_type.name == type_name {
+                            return Some(GraphQLQueryType {
+                                name: type_name,
+                                fields: vec![],
+                            });
+                        }
+                    }
+                    graphql_parser::schema::TypeDefinition::InputObject(input_object_type) => {
+                        if input_object_type.name == type_name {
+                            let fields = input_object_type
+                                .fields
+                                .iter()
+                                .map(|f| GraphQLQueryField {
+                                    name: f.name.to_string(),
+                                    nullable: !matches!(
+                                        f.value_type,
+                                        graphql_parser::query::Type::NonNullType(_)
+                                    ),
+                                    // TODO handle recursion
+                                    r#type: find_type_by_name(
+                                        graphql,
+                                        f.value_type.to_string().replace("!", ""),
+                                    ),
+                                })
+                                .collect_vec();
+                            return Some(GraphQLQueryType {
+                                name: type_name,
+                                fields,
+                            });
+                        }
+                    }
+                }
+            }
+            graphql_parser::schema::Definition::TypeExtension(type_extension) => {
+                match type_extension {
+                    graphql_parser::schema::TypeExtension::Object(object_type_extension) => {
+                        if object_type_extension.name == type_name {
+                            let fields = object_type_extension
+                                .fields
+                                .iter()
+                                .map(|f| GraphQLQueryField {
+                                    name: f.name.to_string(),
+                                    nullable: !matches!(
+                                        f.field_type,
+                                        graphql_parser::query::Type::NonNullType(_)
+                                    ),
+                                    // TODO handle recursion
+                                    r#type: find_type_by_name(
+                                        graphql,
+                                        f.field_type.to_string().replace("!", ""),
+                                    ),
+                                })
+                                .collect_vec();
+                            return Some(GraphQLQueryType {
+                                name: type_name,
+                                fields,
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn stringify_graphql_type<'a>(t: &'a graphql_parser::query::Type<&'a str>) -> String {
+    match t {
+        graphql_parser::query::Type::NamedType(n) => n.to_string(),
+        graphql_parser::query::Type::ListType(l) => match &**l {
+            graphql_parser::query::Type::NamedType(n) => format!("[{}]", n),
+            graphql_parser::query::Type::ListType(ll) => {
+                format!("[{}]", stringify_graphql_type(ll))
+            }
+            graphql_parser::query::Type::NonNullType(n) => {
+                format!("[{}]", stringify_graphql_type(n))
+            }
+        },
+        graphql_parser::query::Type::NonNullType(n) => format!("{}!", stringify_graphql_type(n)),
+    }
+}
+
+fn generate_openapi(args: GenerateOpenapiArgs) -> Result<(), Box<dyn Error>> {
+    if args.include_paths.is_some() {
+        let include_paths = args.include_paths.as_ref().unwrap();
+        let valid = regex_lite::Regex::new(include_paths)
+            .map_err(|e| HeaveError::MalformedIncludePathsRegex { source: e });
+        if valid.is_err() {
+            let valid = valid.unwrap_err();
+            println!("{}", valid);
+            return Err(valid.into());
+        }
+    }
+    if args.include_status_codes.is_some() {
+        let include_status_codes = args.include_status_codes.as_ref().unwrap();
+        let valid = regex_lite::Regex::new(include_status_codes)
+            .map_err(|e| HeaveError::MalformedIncludeStatusCodesRegex { source: e });
+        if valid.is_err() {
+            let valid = valid.unwrap_err();
+            println!("{}", valid);
+            return Err(valid.into());
+        }
+    }
+
+    if args.include_operation_ids.is_some() {
+        let include_operation_ids = args.include_operation_ids.as_ref().unwrap();
+        let valid = regex_lite::Regex::new(include_operation_ids)
+            .map_err(|e| HeaveError::MalformedIncludeOperationIDsRegex { source: e });
+        if valid.is_err() {
+            let valid = valid.unwrap_err();
+            println!("{}", valid);
+            return Err(valid.into());
+        }
+    }
+
+    let output_directory = args.output;
+    let output_directory_metadata = std::fs::metadata(&output_directory)?;
+    if !output_directory_metadata.is_dir() {
+        return Err("Output must be a directory".into());
+    }
+
+    let template = match &args.template {
+        Some(t) => {
+            let metadata = std::fs::metadata(t)?;
+            if !metadata.is_file() {
+                return Err("Template must be a file".into());
+            }
+            let template_content = std::fs::read_to_string(t);
+            template_content.unwrap()
+        }
+        None => DEFAULT_HURL_TEMPLATE.to_string(),
+    };
+
+    // This is used as a mechanism to validate that the syntax of the template parses
+    // correctly before doing more work. The function that writes the output creates its
+    // own minijinja Environment.
+    let mut jinja_env = Environment::new();
+    jinja_env
+        .add_template("output.hurl", &template)
+        .map_err(|e| HeaveError::JinjaError { source: e })?;
+
+    let input_path = &args.path;
+    let input_metadata = std::fs::metadata(input_path)?;
+    if !input_metadata.is_file() {
+        return Err("Input spec must be a file".into());
+    }
+    let input_extension = match &input_path.extension() {
+        Some(ext) => match ext.to_str() {
+            Some("json") => Ok(InputSpecExtension::Json),
+            Some("yaml") => Ok(InputSpecExtension::Yaml),
+            _ => Err("Input spec must be json or yaml file"),
+        },
+        None => Err("Input spec must be json or yaml file"),
+    }?;
+
+    let content = std::fs::read_to_string(input_path)?;
+    let openapi: OpenAPI = match input_extension {
+        InputSpecExtension::Json => {
+            serde_json::from_str(&content).expect("Could not deserialize input as json")
+        }
+        InputSpecExtension::Yaml => {
+            serde_yaml::from_str(&content).expect("Could not deserialize input as yaml")
+        }
+    };
+
+    let result = generate(openapi);
+    let mut final_outputs = result.outputs;
+    if args.include_paths.is_some() {
+        let include_paths = args.include_paths.unwrap();
+        // Regex was validated at the start of the CLI
+        let regex = regex_lite::Regex::new(&include_paths).unwrap();
+        final_outputs = filter_include_paths_outputs(regex, final_outputs);
+    }
+
+    if args.include_status_codes.is_some() {
+        let include_status_codes = args.include_status_codes.unwrap();
+        // Regex was validated at the start of the CLI
+        let regex = regex_lite::Regex::new(&include_status_codes).unwrap();
+        final_outputs = filter_include_status_codes_outputs(regex, final_outputs);
+    }
+
+    if args.include_operation_ids.is_some() {
+        let include_operation_ids = args.include_operation_ids.unwrap();
+        // Regex was validated at the start of the CLI
+        let regex = regex_lite::Regex::new(&include_operation_ids).unwrap();
+        final_outputs = filter_include_operation_ids_outputs(regex, final_outputs);
+    }
+
+    if args.only_new {
+        let existing_files: Vec<PathBuf> = std::fs::read_dir(&output_directory)?
+            .filter_map(|entry| {
+                if entry.is_err() {
+                    return None;
+                }
+                if entry.as_ref().unwrap().file_type().is_err() {
+                    return None;
+                }
+                if !entry.as_ref().unwrap().file_type().unwrap().is_file() {
+                    return None;
+                }
+                Some(entry.unwrap().path())
+            })
+            .collect();
+        final_outputs = filter_only_new_outputs(&existing_files, final_outputs);
+    }
+
+    write_outputs(&final_outputs, &template, &output_directory)?;
+
+    if args.show_diagnostics {
+        result.diagnostics.iter().for_each(|d| println!("{}", d));
+    } else if !result.diagnostics.is_empty() {
+        eprintln!("Diagnostics are available. Re-run your previous command with `--show-diagnostics` to see them.")
+    }
+
+    Ok(())
 }
 
 fn filter_include_operation_ids_outputs(
@@ -1399,7 +1825,10 @@ mod tests {
     use insta::{assert_debug_snapshot, assert_snapshot, glob};
     use openapiv3::OpenAPI;
 
-    use crate::{generate, write_outputs, Output, DEFAULT_HURL_TEMPLATE};
+    use crate::{
+        generate, generate_graphql_inner, write_outputs, Output, DEFAULT_GRAPH_HURL_TEMPLATE,
+        DEFAULT_HURL_TEMPLATE,
+    };
 
     // Creates an OpenAPI from a file path
     macro_rules! openapi_from_yaml {
@@ -1443,6 +1872,31 @@ mod tests {
             }
         });
 
+        Ok(())
+    }
+
+    #[test]
+    fn petstore_graphql() -> Result<(), Box<dyn Error>> {
+        let content = std::fs::read_to_string("src/snapshots/petstore_graphql/petstore.graphql")?;
+        let output_directory = PathBuf::from_str("src/snapshots/petstore_graphql")?;
+        let graphql = graphql_parser::schema::parse_schema::<&str>(&content)?;
+        let result = generate_graphql_inner(&graphql);
+        dbg!(&result);
+        write_outputs(
+            &result.outputs,
+            DEFAULT_GRAPH_HURL_TEMPLATE,
+            &output_directory,
+        )?;
+        let mut settings = insta::Settings::clone_current();
+        settings.set_omit_expression(true);
+        settings.bind(|| {
+            insta::allow_duplicates! {
+                glob!("snapshots/petstore_graphql/*.hurl", |path| {
+                    let input = std::fs::read_to_string(path).unwrap();
+                    assert_snapshot!(input);
+                });
+            };
+        });
         Ok(())
     }
 

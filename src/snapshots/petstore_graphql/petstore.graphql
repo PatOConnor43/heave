@@ -1,0 +1,66 @@
+# PetStore GraphQL Schema
+
+"""
+Represents a pet in the system
+"""
+type Pet {
+  id: ID!
+  name: String!
+  tag: String
+}
+
+"""
+Error response containing an error code and message
+"""
+type Error {
+  code: Int!
+  message: String!
+}
+
+"""
+Response for paginated pet list
+"""
+type PetsResponse {
+  pets: [Pet!]!
+  nextPage: String
+}
+
+"""
+Input type for creating a new pet
+"""
+input CreatePetInput {
+  name: String!
+  tag: String
+}
+
+type Query {
+  """
+  List all pets with optional pagination
+  """
+  listPets(limit: Int): PetsResponse!
+  
+  """
+  Get information about a specific pet by ID
+  """
+  getPet(id: ID!): Pet
+}
+
+
+extend type Query {
+  """
+  Get a pet by ID
+  """
+  getPetById(id: ID!): Pet
+}
+
+type Mutation {
+  """
+  Create a new pet
+  """
+  createPet(input: CreatePetInput!): Pet!
+  
+  """
+  Delete an existing pet by ID
+  """
+  deletePet(id: ID!): Boolean!
+}
