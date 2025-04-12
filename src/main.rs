@@ -1,8 +1,10 @@
+use apollo_parser::cst::CstNode;
 use clap::{Args, Parser, Subcommand};
 use itertools::Itertools;
 use minijinja::{context, Environment};
 use openapiv3::{MediaType, OpenAPI, ReferenceOr};
 use std::{
+    collections::HashMap,
     error::Error,
     path::{Path, PathBuf},
 };
@@ -144,7 +146,7 @@ pub enum InputSpecExtension {
 struct GraphQLQuery {
     name: String,
     arguments: Vec<GraphQLQueryArgument>,
-    return_type: Option<GraphQLQueryType>,
+    return_type: String,
 }
 
 #[derive(Debug)]
@@ -158,13 +160,459 @@ struct GraphQLQueryArgument {
 struct GraphQLQueryType {
     name: String,
     fields: Vec<GraphQLQueryField>,
+    union_metadata: Option<UnionMetadata>,
 }
 
 #[derive(Debug)]
 struct GraphQLQueryField {
     name: String,
-    nullable: bool,
-    r#type: Option<GraphQLQueryType>,
+    r#type: String,
+}
+
+#[derive(Debug)]
+struct UnionMetadata {
+    members: Vec<String>,
+}
+
+struct HeaveGQLTree {
+    queries: Vec<GraphQLQuery>,
+    type_map: HashMap<String, GraphQLQueryType>,
+}
+
+impl HeaveGQLTree {
+    fn new(graph: apollo_parser::SyntaxTree<apollo_parser::cst::Document>) -> Self {
+        let type_map = Self::build_type_map(&graph);
+        let queries = Self::build_queries(&graph);
+        HeaveGQLTree { queries, type_map }
+    }
+
+    fn build_queries(
+        graph: &apollo_parser::SyntaxTree<apollo_parser::cst::Document>,
+    ) -> Vec<GraphQLQuery> {
+        let mut queries = vec![];
+        let document = graph.document();
+        for def in document.definitions() {
+            match def {
+                apollo_parser::cst::Definition::ObjectTypeDefinition(object_type_definition) => {
+                    if object_type_definition.name().is_none() {
+                        continue;
+                    }
+                    let name = object_type_definition.name().unwrap().source_string();
+                    if name != "Query" {
+                        continue;
+                    }
+                    if let Some(fields) = object_type_definition.fields_definition() {
+                        for fd in fields.field_definitions() {
+                            let mut arguments: Vec<GraphQLQueryArgument> = vec![];
+                            if let Some(args) = fd.arguments_definition() {
+                                for arg in args.input_value_definitions() {
+                                    let nullable = !matches!(
+                                        arg.ty().unwrap(),
+                                        apollo_parser::cst::Type::NonNullType(_)
+                                    );
+                                    let t = arg.ty().unwrap().source_string();
+                                    let arg = GraphQLQueryArgument {
+                                        name: arg.name().unwrap().source_string(),
+                                        nullable,
+                                        r#type: t,
+                                    };
+                                    arguments.push(arg);
+                                }
+                            }
+                            let return_type = fd.ty().unwrap().source_string();
+                            let query = GraphQLQuery {
+                                name: fd.name().unwrap().source_string(),
+                                arguments,
+                                return_type,
+                            };
+                            queries.push(query);
+                        }
+                    }
+                }
+                apollo_parser::cst::Definition::ObjectTypeExtension(object_type_extension) => {
+                    if object_type_extension.name().is_none() {
+                        continue;
+                    }
+                    let name = object_type_extension.name().unwrap().source_string();
+                    if name != "Query" {
+                        continue;
+                    }
+                    if let Some(fields) = object_type_extension.fields_definition() {
+                        for fd in fields.field_definitions() {
+                            let mut arguments: Vec<GraphQLQueryArgument> = vec![];
+                            if let Some(args) = fd.arguments_definition() {
+                                for arg in args.input_value_definitions() {
+                                    let nullable = !matches!(
+                                        arg.ty().unwrap(),
+                                        apollo_parser::cst::Type::NonNullType(_)
+                                    );
+                                    let t = arg.ty().unwrap().source_string();
+                                    let arg = GraphQLQueryArgument {
+                                        name: arg.name().unwrap().source_string(),
+                                        nullable,
+                                        r#type: t,
+                                    };
+                                    arguments.push(arg);
+                                }
+                            }
+                            let return_type = fd.ty().unwrap().source_string();
+                            let query = GraphQLQuery {
+                                name: fd.name().unwrap().source_string(),
+                                arguments,
+                                return_type,
+                            };
+                            queries.push(query);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        queries
+    }
+
+    fn build_type_map(
+        graph: &apollo_parser::SyntaxTree<apollo_parser::cst::Document>,
+    ) -> HashMap<String, GraphQLQueryType> {
+        let mut type_map: HashMap<String, GraphQLQueryType> = HashMap::new();
+        type_map.extend(["Int", "Float", "String", "Boolean", "ID"].iter().map(|s| {
+            (
+                s.to_string(),
+                GraphQLQueryType {
+                    name: s.to_string(),
+                    fields: vec![],
+                    union_metadata: None,
+                },
+            )
+        }));
+        let document = graph.document();
+        for def in document.definitions() {
+            match def {
+                apollo_parser::cst::Definition::ObjectTypeDefinition(object_type_definition) => {
+                    let mut graph_fields: Vec<GraphQLQueryField> = vec![];
+                    if let Some(fields) = object_type_definition.fields_definition() {
+                        for fd in fields.field_definitions() {
+                            graph_fields.push(GraphQLQueryField {
+                                name: fd.name().unwrap().source_string(),
+                                r#type: fd.ty().unwrap().source_string(),
+                            });
+                        }
+                    }
+                    let name = object_type_definition.name().unwrap().source_string();
+                    if let Some(v) = type_map.get_mut(&name) {
+                        v.fields.extend(graph_fields);
+                    } else {
+                        type_map.insert(
+                            name.clone(),
+                            GraphQLQueryType {
+                                name,
+                                fields: graph_fields,
+                                union_metadata: None,
+                            },
+                        );
+                    }
+                }
+                apollo_parser::cst::Definition::ObjectTypeExtension(object_type_extension) => {
+                    let mut graph_fields: Vec<GraphQLQueryField> = vec![];
+                    if let Some(fd) = object_type_extension.fields_definition() {
+                        for f in fd.field_definitions() {
+                            graph_fields.push(GraphQLQueryField {
+                                name: f.name().unwrap().source_string(),
+                                r#type: f.ty().unwrap().source_string(),
+                            });
+                        }
+                    }
+                    let name = object_type_extension.name().unwrap().source_string();
+                    if let Some(v) = type_map.get_mut(&name) {
+                        v.fields.extend(graph_fields);
+                    } else {
+                        type_map.insert(
+                            name.clone(),
+                            GraphQLQueryType {
+                                name,
+                                fields: graph_fields,
+                                union_metadata: None,
+                            },
+                        );
+                    }
+                }
+                apollo_parser::cst::Definition::InterfaceTypeDefinition(
+                    interface_type_definition,
+                ) => {
+                    let mut graph_fields: Vec<GraphQLQueryField> = vec![];
+                    if let Some(fields) = interface_type_definition.fields_definition() {
+                        for fd in fields.field_definitions() {
+                            graph_fields.push(GraphQLQueryField {
+                                name: fd.name().unwrap().source_string(),
+                                r#type: fd.ty().unwrap().source_string(),
+                            });
+                        }
+                    }
+                    let name = interface_type_definition.name().unwrap().source_string();
+                    if let Some(v) = type_map.get_mut(&name) {
+                        v.fields.extend(graph_fields);
+                    } else {
+                        type_map.insert(
+                            name.clone(),
+                            GraphQLQueryType {
+                                name,
+                                fields: graph_fields,
+                                union_metadata: None,
+                            },
+                        );
+                    }
+                }
+                apollo_parser::cst::Definition::InterfaceTypeExtension(
+                    interface_type_extension,
+                ) => {
+                    let mut graph_fields: Vec<GraphQLQueryField> = vec![];
+                    if let Some(fields) = interface_type_extension.fields_definition() {
+                        for fd in fields.field_definitions() {
+                            graph_fields.push(GraphQLQueryField {
+                                name: fd.name().unwrap().source_string(),
+                                r#type: fd.ty().unwrap().source_string(),
+                            });
+                        }
+                    }
+                    let name = interface_type_extension.name().unwrap().source_string();
+                    if let Some(v) = type_map.get_mut(&name) {
+                        v.fields.extend(graph_fields);
+                    } else {
+                        type_map.insert(
+                            name.clone(),
+                            GraphQLQueryType {
+                                name,
+                                fields: graph_fields,
+                                union_metadata: None,
+                            },
+                        );
+                    }
+                }
+                apollo_parser::cst::Definition::UnionTypeDefinition(union_type_definition) => {
+                    let name = union_type_definition.name().unwrap().source_string();
+                    let graph_fields: Vec<GraphQLQueryField> = vec![];
+                    let union_members = union_type_definition
+                        .union_member_types()
+                        .unwrap()
+                        .named_types()
+                        .map(|t| t.source_string())
+                        .collect();
+                    type_map.insert(
+                        name.clone(),
+                        GraphQLQueryType {
+                            name,
+                            fields: graph_fields,
+                            union_metadata: Some(UnionMetadata {
+                                members: union_members,
+                            }),
+                        },
+                    );
+                }
+                apollo_parser::cst::Definition::UnionTypeExtension(union_type_extension) => {
+                    let name = union_type_extension.name().unwrap().source_string();
+                    let graph_fields: Vec<GraphQLQueryField> = vec![];
+                    let union_members = union_type_extension
+                        .union_member_types()
+                        .unwrap()
+                        .named_types()
+                        .map(|t| t.source_string())
+                        .collect();
+                    if let Some(v) = type_map.get_mut(&name) {
+                        v.union_metadata = Some(UnionMetadata {
+                            members: union_members,
+                        });
+                    } else {
+                        type_map.insert(
+                            name.clone(),
+                            GraphQLQueryType {
+                                name,
+                                fields: graph_fields,
+                                union_metadata: Some(UnionMetadata {
+                                    members: union_members,
+                                }),
+                            },
+                        );
+                    }
+                }
+                apollo_parser::cst::Definition::ScalarTypeDefinition(scalar_type_definition) => {
+                    let name = scalar_type_definition.name().unwrap().source_string();
+                    let graph_fields: Vec<GraphQLQueryField> = vec![];
+                    type_map.insert(
+                        name.clone(),
+                        GraphQLQueryType {
+                            name,
+                            fields: graph_fields,
+                            union_metadata: None,
+                        },
+                    );
+                }
+                apollo_parser::cst::Definition::ScalarTypeExtension(scalar_type_extension) => {
+                    let name = scalar_type_extension.name().unwrap().source_string();
+                    let graph_fields: Vec<GraphQLQueryField> = vec![];
+                    if let Some(v) = type_map.get_mut(&name) {
+                        v.union_metadata = None;
+                    } else {
+                        type_map.insert(
+                            name.clone(),
+                            GraphQLQueryType {
+                                name,
+                                fields: graph_fields,
+                                union_metadata: None,
+                            },
+                        );
+                    }
+                }
+                apollo_parser::cst::Definition::EnumTypeDefinition(enum_type_definition) => {
+                    let name = enum_type_definition.name().unwrap().source_string();
+                    let graph_fields: Vec<GraphQLQueryField> = vec![];
+                    type_map.insert(
+                        name.clone(),
+                        GraphQLQueryType {
+                            name,
+                            fields: graph_fields,
+                            union_metadata: None,
+                        },
+                    );
+                }
+                apollo_parser::cst::Definition::InputObjectTypeDefinition(
+                    input_object_type_definition,
+                ) => {
+                    let name = input_object_type_definition.name().unwrap().source_string();
+                    let graph_fields: Vec<GraphQLQueryField> = vec![];
+                    type_map.insert(
+                        name.clone(),
+                        GraphQLQueryType {
+                            name,
+                            fields: graph_fields,
+                            union_metadata: None,
+                        },
+                    );
+                }
+                apollo_parser::cst::Definition::EnumTypeExtension(enum_type_extension) => {
+                    let name = enum_type_extension.name().unwrap().source_string();
+                    let graph_fields: Vec<GraphQLQueryField> = vec![];
+                    if let Some(v) = type_map.get_mut(&name) {
+                        v.union_metadata = None;
+                    } else {
+                        type_map.insert(
+                            name.clone(),
+                            GraphQLQueryType {
+                                name,
+                                fields: graph_fields,
+                                union_metadata: None,
+                            },
+                        );
+                    }
+                }
+                apollo_parser::cst::Definition::InputObjectTypeExtension(
+                    input_object_type_extension,
+                ) => {
+                    let name = input_object_type_extension.name().unwrap().source_string();
+                    let graph_fields: Vec<GraphQLQueryField> = vec![];
+                    if let Some(v) = type_map.get_mut(&name) {
+                        v.union_metadata = None;
+                    } else {
+                        type_map.insert(
+                            name.clone(),
+                            GraphQLQueryType {
+                                name,
+                                fields: graph_fields,
+                                union_metadata: None,
+                            },
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+        type_map
+    }
+
+    fn build_outputs(&self) -> Result<Vec<Output>, HeaveError> {
+        let mut outputs = vec![];
+        for query in &self.queries {
+            let name = format!("{}.hurl", query.name);
+            let inner_request_body =
+                self.render_field_in_query(query.name.as_str(), query.return_type.as_str(), 0);
+            let request_body = format!(
+                "query {{\n{}\n}}",
+                inner_request_body.unwrap_or("".to_string())
+            );
+            let request_body = graphql_parser::minify_query(request_body).unwrap();
+            let q: graphql_parser::query::Document<'_, String> =
+                graphql_parser::parse_query(request_body.as_str()).unwrap();
+            let request_body = q.format(&graphql_parser::Style::default());
+            let output = Output {
+                expected_status_code: 200,
+                name,
+                hurl_path: "".to_string(),
+                oas_path: "".to_string(),
+                oas_operation_id: None,
+                method: "POST".to_string(),
+                header_parameters: vec![],
+                query_parameters: vec![],
+                asserts: vec![],
+                request_body_parameter: request_body,
+            };
+            outputs.push(output);
+        }
+        Ok(outputs)
+    }
+
+    fn render_field_in_query(&self, name: &str, field_type: &str, depth: u8) -> Option<String> {
+        if depth > 3 {
+            return None;
+        }
+        // I'm pretty sure I don't care if anything is nullable or not
+        let field_type = field_type.replace("!", "").to_string();
+        if field_type.starts_with("[") && field_type.ends_with("]") {
+            let unwrapped_list_type = field_type
+                .strip_prefix("[")
+                .unwrap()
+                .strip_suffix("]")
+                .unwrap();
+            let body = self.render_field_in_query(name, unwrapped_list_type, depth);
+            return body;
+        }
+        if let Some(t) = self.type_map.get(&field_type) {
+            if let Some(members) = &t.union_metadata {
+                let mut union_bodies = vec![];
+                for member in &members.members {
+                    let body = self.render_field_in_query("", member, depth);
+                    if body.is_none() {
+                        continue;
+                    }
+                    union_bodies.push(format!("... on {}{}\n\n", member, body.unwrap()));
+                }
+                if union_bodies.is_empty() {
+                    return None;
+                }
+                return Some(format!("{}{{\n{}\n}}\n", name, union_bodies.join("\n")));
+            }
+            if t.fields.is_empty() {
+                return Some(format!("{}\n", name));
+            } else {
+                let mut field_bodies = vec![];
+                for field in t.fields.iter() {
+                    let field_name = field.name.as_str();
+                    let field_type = field.r#type.as_str();
+                    let inner_body = self.render_field_in_query(field_name, field_type, depth + 1);
+                    if inner_body.is_none() {
+                        continue;
+                    }
+                    field_bodies.push(inner_body.unwrap().to_string());
+                }
+                if field_bodies.is_empty() {
+                    return None;
+                }
+                return Some(format!("{}{{\n{}\n}}\n", name, field_bodies.join("\n")));
+            }
+        }
+        println!("Field type not found: {}", field_type);
+
+        None
+    }
 }
 
 const DEFAULT_HURL_TEMPLATE: &str = r#"{{ method }} {{ '{{ baseurl }}' }}{{ path | safe }}
@@ -520,331 +968,26 @@ fn generate_graphql(args: GenerateGraphqlArgs) -> Result<(), Box<dyn Error>> {
     }
 
     let content = std::fs::read_to_string(input_path)?;
-    let graphql = graphql_parser::schema::parse_schema::<&str>(&content)?;
-    let result = generate_graphql_inner(&graphql);
+    let parser = apollo_parser::Parser::new(content.as_str());
+    let parser = parser.recursion_limit(1);
+    let graphql = parser.parse();
+    if graphql.errors().len() > 0 {
+        return Err("GraphQL spec is not valid".into());
+    }
+    let result = generate_graphql_inner(graphql);
     write_outputs(&result.outputs, &template, &output_directory)?;
     Ok(())
 }
 
-fn generate_graphql_inner<'a>(
-    graphql: &'a graphql_parser::schema::Document<&'a str>,
+fn generate_graphql_inner(
+    graphql: apollo_parser::SyntaxTree<apollo_parser::cst::Document>,
 ) -> GenerateResult {
-    let mut outputs: Vec<Output> = vec![];
-    let queries = extract_queries(graphql);
-    dbg!(&queries);
-    for query in queries.iter() {
-        let graphql_body = build_body_for_query(&query);
-    }
-    //graphql.definitions.iter().for_each(|definition| {
-    //    if let graphql_parser::schema::Definition::TypeExtension(t_def) = definition {
-    //        if let graphql_parser::schema::TypeExtension::Object(o) = t_def {
-    //            if o.name == "Query" {
-    //                o.fields.iter().for_each(|f| {
-    //                    let name = f.name;
-    //                    let hurl_file_name = format!("{}.hurl", name);
-    //                    dbg!(&f.field_type.to_string());
-    //                    let return_definition = graphql.definitions.iter().find(|d| match d {
-    //                        graphql_parser::schema::Definition::TypeDefinition(t) => {
-    //                            if let graphql_parser::schema::TypeDefinition::Object(o) = t {
-    //                                if o.name == f.field_type.to_string().replace("!", "") {
-    //                                    return true;
-    //                                }
-    //                            } else if let graphql_parser::schema::TypeDefinition::Interface(i) =
-    //                                t
-    //                            {
-    //                                if i.name == f.field_type.to_string().replace("!", "") {
-    //                                    return true;
-    //                                }
-    //                            }
-    //                            false
-    //                        }
-    //                        _ => false,
-    //                    });
-    //                    if return_definition.is_none() {
-    //                        dbg!("not found: ", &f.field_type);
-    //                        return;
-    //                    }
-    //                    let return_definition = return_definition.unwrap();
-    //                    let fields = match return_definition {
-    //                        graphql_parser::schema::Definition::TypeDefinition(t) => {
-    //                            if let graphql_parser::schema::TypeDefinition::Object(o) = t {
-    //                                o.fields.iter().map(|f| f.name.clone()).collect_vec()
-    //                            } else if let graphql_parser::schema::TypeDefinition::Interface(i) =
-    //                                t
-    //                            {
-    //                                i.fields.iter().map(|f| f.name.clone()).collect_vec()
-    //                            } else {
-    //                                vec![]
-    //                            }
-    //                        }
-    //                        _ => vec![],
-    //                    };
-    //                    let request_body = format!("query {}{{ {} }}", name, fields.join("\n"));
-    //                    dbg!(&request_body);
-    //                    let r = graphql_parser::minify_query(request_body.to_string()).unwrap();
-    //                    let r = format!("{}", graphql_parser::parse_query::<String>(&r).unwrap());
-    //                    let output = Output {
-    //                        expected_status_code: 200,
-    //                        name: hurl_file_name.clone(),
-    //                        hurl_path: "".to_string(),
-    //                        oas_path: "".to_string(),
-    //                        oas_operation_id: None,
-    //                        method: "".to_string(),
-    //                        header_parameters: vec![],
-    //                        query_parameters: vec![],
-    //                        asserts: vec![],
-    //                        request_body_parameter: r,
-    //                    };
-    //                    outputs.push(output);
-    //                });
-    //            }
-    //        }
-    //    }
-    //});
+    let tree = HeaveGQLTree::new(graphql);
+    let outputs = tree.build_outputs().unwrap();
+
     GenerateResult {
         outputs,
         diagnostics: vec![],
-    }
-}
-
-fn build_body_for_query(query: &GraphQLQuery) -> String {
-    let mut body = "query {\n".to_string();
-    if query.arguments.len() == 0 {
-        body.push_str(format!("{} {{\n", query.name).as_str());
-    } else {
-        body.push_str(format!("{}(", query.name).as_str());
-    }
-    body
-}
-
-fn extract_queries<'a>(
-    graphql: &'a graphql_parser::schema::Document<'_, &'a str>,
-) -> Vec<GraphQLQuery> {
-    let mut queries: Vec<GraphQLQuery> = vec![];
-    for definition in graphql.definitions.iter() {
-        match definition {
-            graphql_parser::schema::Definition::TypeDefinition(type_definition) => {
-                if let graphql_parser::schema::TypeDefinition::Object(object_type) = type_definition
-                {
-                    if object_type.name == "Query" {
-                        for field in object_type.fields.iter() {
-                            let mut arguments: Vec<GraphQLQueryArgument> = vec![];
-                            for argument in field.arguments.iter() {
-                                let nullable = !matches!(
-                                    argument.value_type,
-                                    graphql_parser::query::Type::NonNullType(_)
-                                );
-                                let t = stringify_graphql_type(&argument.value_type);
-                                let arg = GraphQLQueryArgument {
-                                    name: argument.name.to_string(),
-                                    nullable,
-                                    r#type: t,
-                                };
-                                arguments.push(arg);
-                            }
-                            let return_type = find_type_by_name(
-                                graphql,
-                                field.field_type.to_string().replace("!", ""),
-                            );
-                            let query = GraphQLQuery {
-                                name: field.name.to_string(),
-                                arguments,
-                                return_type,
-                            };
-                            queries.push(query);
-                        }
-                    }
-                }
-            }
-            graphql_parser::schema::Definition::TypeExtension(type_extension) => {
-                if let graphql_parser::schema::TypeExtension::Object(object_type_extension) =
-                    type_extension
-                {
-                    if object_type_extension.name == "Query" {
-                        for field in object_type_extension.fields.iter() {
-                            let mut arguments: Vec<GraphQLQueryArgument> = vec![];
-                            for argument in field.arguments.iter() {
-                                let nullable = !matches!(
-                                    argument.value_type,
-                                    graphql_parser::query::Type::NonNullType(_)
-                                );
-                                let t = stringify_graphql_type(&argument.value_type);
-                                let arg = GraphQLQueryArgument {
-                                    name: argument.name.to_string(),
-                                    nullable,
-                                    r#type: t,
-                                };
-                                arguments.push(arg);
-                            }
-                            let return_type = find_type_by_name(
-                                graphql,
-                                field.field_type.to_string().replace("!", ""),
-                            );
-                            let query = GraphQLQuery {
-                                name: field.name.to_string(),
-                                arguments,
-                                return_type,
-                            };
-                            queries.push(query);
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    queries
-}
-
-fn find_type_by_name<'a>(
-    graphql: &'a graphql_parser::schema::Document<'_, &'a str>,
-    type_name: String,
-) -> Option<GraphQLQueryType> {
-    for definition in graphql.definitions.iter() {
-        match definition {
-            graphql_parser::schema::Definition::TypeDefinition(type_definition) => {
-                match type_definition {
-                    graphql_parser::schema::TypeDefinition::Object(object_type) => {
-                        if object_type.name == type_name {
-                            let fields = object_type
-                                .fields
-                                .iter()
-                                .map(|f| GraphQLQueryField {
-                                    name: f.name.to_string(),
-                                    nullable: !matches!(
-                                        f.field_type,
-                                        graphql_parser::query::Type::NonNullType(_)
-                                    ),
-                                    // TODO handle recursion
-                                    r#type: find_type_by_name(
-                                        graphql,
-                                        f.field_type.to_string().replace("!", ""),
-                                    ),
-                                })
-                                .collect_vec();
-                            return Some(GraphQLQueryType {
-                                name: type_name,
-                                fields,
-                            });
-                        }
-                    }
-                    graphql_parser::schema::TypeDefinition::Scalar(scalar_type) => {
-                        if scalar_type.name == type_name {
-                            return Some(GraphQLQueryType {
-                                name: type_name,
-                                fields: vec![],
-                            });
-                        }
-                    }
-                    graphql_parser::schema::TypeDefinition::Interface(interface_type) => {
-                        if interface_type.name == type_name {
-                            let fields = interface_type
-                                .fields
-                                .iter()
-                                .map(|f| GraphQLQueryField {
-                                    name: f.name.to_string(),
-                                    nullable: !matches!(
-                                        f.field_type,
-                                        graphql_parser::query::Type::NonNullType(_)
-                                    ),
-                                    // TODO handle recursion
-                                    r#type: find_type_by_name(
-                                        graphql,
-                                        f.field_type.to_string().replace("!", ""),
-                                    ),
-                                })
-                                .collect_vec();
-                            return Some(GraphQLQueryType {
-                                name: type_name,
-                                fields,
-                            });
-                        }
-                    }
-                    graphql_parser::schema::TypeDefinition::Union(union_type) => {
-                        todo!();
-                    }
-                    graphql_parser::schema::TypeDefinition::Enum(enum_type) => {
-                        if enum_type.name == type_name {
-                            return Some(GraphQLQueryType {
-                                name: type_name,
-                                fields: vec![],
-                            });
-                        }
-                    }
-                    graphql_parser::schema::TypeDefinition::InputObject(input_object_type) => {
-                        if input_object_type.name == type_name {
-                            let fields = input_object_type
-                                .fields
-                                .iter()
-                                .map(|f| GraphQLQueryField {
-                                    name: f.name.to_string(),
-                                    nullable: !matches!(
-                                        f.value_type,
-                                        graphql_parser::query::Type::NonNullType(_)
-                                    ),
-                                    // TODO handle recursion
-                                    r#type: find_type_by_name(
-                                        graphql,
-                                        f.value_type.to_string().replace("!", ""),
-                                    ),
-                                })
-                                .collect_vec();
-                            return Some(GraphQLQueryType {
-                                name: type_name,
-                                fields,
-                            });
-                        }
-                    }
-                }
-            }
-            graphql_parser::schema::Definition::TypeExtension(type_extension) => {
-                match type_extension {
-                    graphql_parser::schema::TypeExtension::Object(object_type_extension) => {
-                        if object_type_extension.name == type_name {
-                            let fields = object_type_extension
-                                .fields
-                                .iter()
-                                .map(|f| GraphQLQueryField {
-                                    name: f.name.to_string(),
-                                    nullable: !matches!(
-                                        f.field_type,
-                                        graphql_parser::query::Type::NonNullType(_)
-                                    ),
-                                    // TODO handle recursion
-                                    r#type: find_type_by_name(
-                                        graphql,
-                                        f.field_type.to_string().replace("!", ""),
-                                    ),
-                                })
-                                .collect_vec();
-                            return Some(GraphQLQueryType {
-                                name: type_name,
-                                fields,
-                            });
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-fn stringify_graphql_type<'a>(t: &'a graphql_parser::query::Type<&'a str>) -> String {
-    match t {
-        graphql_parser::query::Type::NamedType(n) => n.to_string(),
-        graphql_parser::query::Type::ListType(l) => match &**l {
-            graphql_parser::query::Type::NamedType(n) => format!("[{}]", n),
-            graphql_parser::query::Type::ListType(ll) => {
-                format!("[{}]", stringify_graphql_type(ll))
-            }
-            graphql_parser::query::Type::NonNullType(n) => {
-                format!("[{}]", stringify_graphql_type(n))
-            }
-        },
-        graphql_parser::query::Type::NonNullType(n) => format!("{}!", stringify_graphql_type(n)),
     }
 }
 
@@ -1879,8 +2022,9 @@ mod tests {
     fn petstore_graphql() -> Result<(), Box<dyn Error>> {
         let content = std::fs::read_to_string("src/snapshots/petstore_graphql/petstore.graphql")?;
         let output_directory = PathBuf::from_str("src/snapshots/petstore_graphql")?;
-        let graphql = graphql_parser::schema::parse_schema::<&str>(&content)?;
-        let result = generate_graphql_inner(&graphql);
+        let parser = apollo_parser::Parser::new(content.as_str());
+        let graphql = parser.parse();
+        let result = generate_graphql_inner(graphql);
         dbg!(&result);
         write_outputs(
             &result.outputs,
