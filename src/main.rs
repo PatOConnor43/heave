@@ -554,11 +554,17 @@ impl HeaveGQLTree {
                 continue;
             }
             let inner_request_body = inner_request_body.unwrap();
-            let request_body = format!("query {{\n{}\n}}", inner_request_body,);
-            let request_body = graphql_parser::minify_query(request_body).unwrap();
-            let q: graphql_parser::query::Document<'_, String> =
-                graphql_parser::parse_query(request_body.as_str()).unwrap();
-            let request_body = q.format(&graphql_parser::Style::default());
+            let request_body = format!("query {{{}}}", inner_request_body,);
+            let parser = apollo_parser::Parser::new(request_body.as_str());
+            let graphql = parser.parse();
+            if graphql.errors().len() > 0 {
+                diagnostics.push(HeaveError::FailedGraphQLQueryGeneration {
+                    query: query.name.clone(),
+                });
+                continue;
+            }
+            let request_body = Self::format_graphql_query(&request_body);
+
             let output = Output {
                 expected_status_code: 200,
                 name,
@@ -599,15 +605,15 @@ impl HeaveGQLTree {
                     if body.is_none() {
                         continue;
                     }
-                    union_bodies.push(format!("... on {}{}\n\n", member, body.unwrap()));
+                    union_bodies.push(format!("... on {}{}", member, body.unwrap()));
                 }
                 if union_bodies.is_empty() {
                     return None;
                 }
-                return Some(format!("{}{{\n{}\n}}\n", name, union_bodies.join("\n")));
+                return Some(format!("{} {{{}}}", name, union_bodies.join("\n")));
             }
             if t.fields.is_empty() {
-                return Some(format!("{}\n", name));
+                return Some(name.to_string());
             } else {
                 let mut field_bodies = vec![];
                 for field in t.fields.iter() {
@@ -622,12 +628,44 @@ impl HeaveGQLTree {
                 if field_bodies.is_empty() {
                     return None;
                 }
-                return Some(format!("{}{{\n{}\n}}\n", name, field_bodies.join("\n")));
+                return Some(format!("{} {{{}}}", name, field_bodies.join("\n")));
             }
         }
         println!("Field type not found: {}", field_type);
 
         None
+    }
+    fn format_graphql_query(input: &str) -> String {
+        let mut result = String::new();
+        let mut indentation_level = 0;
+        let mut last_char: Option<char> = None;
+
+        for c in input.chars() {
+            match c {
+                '{' => {
+                    result.push(c);
+                    result.push('\n');
+
+                    indentation_level += 1;
+                    result.push_str(&" ".repeat(indentation_level * 2));
+                }
+                '}' => {
+                    result.push('\n');
+                    indentation_level -= 1;
+                    result.push_str(&" ".repeat(indentation_level * 2));
+                    result.push(c);
+                }
+                _ => {
+                    if last_char == Some('\n') {
+                        result.push_str(&" ".repeat(indentation_level * 2));
+                    }
+                    result.push(c);
+                }
+            }
+            last_char = Some(c);
+        }
+
+        result
     }
 }
 
