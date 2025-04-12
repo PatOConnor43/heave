@@ -114,6 +114,9 @@ struct GenerateGraphqlArgs {
 
     #[arg(long, help = "Controls the depth of generation.", default_value = "5")]
     depth: u8,
+
+    #[arg(long, help = "Prints diagnostics to stdout.")]
+    show_diagnostics: bool,
 }
 
 /// The struct used to capture output variables.
@@ -537,16 +540,21 @@ impl HeaveGQLTree {
         type_map
     }
 
-    fn build_outputs(&self) -> Result<Vec<Output>, HeaveError> {
+    fn build_outputs(&self) -> (Vec<Output>, Vec<HeaveError>) {
         let mut outputs = vec![];
+        let mut diagnostics = vec![];
         for query in &self.queries {
             let name = format!("{}.hurl", query.name);
             let inner_request_body =
                 self.render_field_in_query(query.name.as_str(), query.return_type.as_str(), 0);
-            let request_body = format!(
-                "query {{\n{}\n}}",
-                inner_request_body.unwrap_or("".to_string())
-            );
+            if inner_request_body.is_none() {
+                diagnostics.push(HeaveError::FailedGraphQLQueryGeneration {
+                    query: query.name.clone(),
+                });
+                continue;
+            }
+            let inner_request_body = inner_request_body.unwrap();
+            let request_body = format!("query {{\n{}\n}}", inner_request_body,);
             let request_body = graphql_parser::minify_query(request_body).unwrap();
             let q: graphql_parser::query::Document<'_, String> =
                 graphql_parser::parse_query(request_body.as_str()).unwrap();
@@ -565,7 +573,7 @@ impl HeaveGQLTree {
             };
             outputs.push(output);
         }
-        Ok(outputs)
+        (outputs, diagnostics)
     }
 
     fn render_field_in_query(&self, name: &str, field_type: &str, depth: u8) -> Option<String> {
@@ -925,6 +933,16 @@ jsonpath: {}"#, .context.path, .context.operation, .jsonpath
         context: DiagnosticContext,
         jsonpath: String,
     },
+
+    #[error(
+        r#"
+-----------------------------
+Failed GraphQL Query Generation
+
+Message: Failed to generate a GraphQL query. It's possible a larger depth parameter is needed in order to generate a valid query.
+Query: {}"#, .query
+    )]
+    FailedGraphQLQueryGeneration { query: String },
 }
 
 #[derive(Debug, Clone)]
@@ -984,6 +1002,12 @@ fn generate_graphql(args: GenerateGraphqlArgs) -> Result<(), Box<dyn Error>> {
     }
     let depth = args.depth;
     let result = generate_graphql_inner(graphql, depth);
+
+    if args.show_diagnostics {
+        result.diagnostics.iter().for_each(|d| println!("{}", d));
+    } else if !result.diagnostics.is_empty() {
+        eprintln!("Diagnostics are available. Re-run your previous command with `--show-diagnostics` to see them.")
+    }
     write_outputs(&result.outputs, &template, &output_directory)?;
     Ok(())
 }
@@ -993,11 +1017,11 @@ fn generate_graphql_inner(
     depth: u8,
 ) -> GenerateResult {
     let tree = HeaveGQLTree::new(graphql, depth);
-    let outputs = tree.build_outputs().unwrap();
+    let (outputs, diagnotics) = tree.build_outputs();
 
     GenerateResult {
         outputs,
-        diagnostics: vec![],
+        diagnostics: diagnotics,
     }
 }
 
@@ -2034,7 +2058,7 @@ mod tests {
         let output_directory = PathBuf::from_str("src/snapshots/petstore_graphql")?;
         let parser = apollo_parser::Parser::new(content.as_str());
         let graphql = parser.parse();
-        let result = generate_graphql_inner(graphql);
+        let result = generate_graphql_inner(graphql, 5);
         dbg!(&result);
         write_outputs(
             &result.outputs,
