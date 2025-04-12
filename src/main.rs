@@ -42,22 +42,22 @@ struct GenerateArgs {
 #[derive(Args, Debug)]
 struct GenerateOpenapiArgs {
     #[arg(
-        help = "The path to an OpenAPI spec. This spec must not contain references to other files\n"
+        help = "The path to an OpenAPI spec. This spec must not contain references to other files."
     )]
     path: PathBuf,
 
-    #[arg(help = "The directory where generated hurl files will be created\n")]
+    #[arg(help = "The directory where generated hurl files will be created.")]
     output: PathBuf,
 
-    #[arg(long, help = "Prints the default template\n")]
+    #[arg(long, help = "A file with a custom minijinja template")]
     template: Option<PathBuf>,
 
-    #[arg(long, help = "Prints diagnostics to stdout\n")]
+    #[arg(long, help = "Prints diagnostics to stdout.")]
     show_diagnostics: bool,
 
     #[arg(
         long,
-        help = "Only generate new files, do not overwrite existing files\n"
+        help = "Only generate new files, do not overwrite existing files."
     )]
     only_new: bool,
 
@@ -103,14 +103,17 @@ Examples:
 
 #[derive(Args, Debug)]
 struct GenerateGraphqlArgs {
-    #[arg(help = "The path to an GraphQL spec.\n")]
+    #[arg(help = "The path to an GraphQL spec.")]
     path: PathBuf,
 
-    #[arg(help = "The directory where generated hurl files will be created\n")]
+    #[arg(help = "The directory where generated hurl files will be created.")]
     output: PathBuf,
 
-    #[arg(long, help = "Prints the default template\n")]
+    #[arg(long, help = "A file with a custom minijinja template.")]
     template: Option<PathBuf>,
+
+    #[arg(long, help = "Controls the depth of generation.", default_value = "5")]
+    depth: u8,
 }
 
 /// The struct used to capture output variables.
@@ -175,15 +178,20 @@ struct UnionMetadata {
 }
 
 struct HeaveGQLTree {
+    depth: u8,
     queries: Vec<GraphQLQuery>,
     type_map: HashMap<String, GraphQLQueryType>,
 }
 
 impl HeaveGQLTree {
-    fn new(graph: apollo_parser::SyntaxTree<apollo_parser::cst::Document>) -> Self {
+    fn new(graph: apollo_parser::SyntaxTree<apollo_parser::cst::Document>, depth: u8) -> Self {
         let type_map = Self::build_type_map(&graph);
         let queries = Self::build_queries(&graph);
-        HeaveGQLTree { queries, type_map }
+        HeaveGQLTree {
+            depth,
+            queries,
+            type_map,
+        }
     }
 
     fn build_queries(
@@ -561,7 +569,7 @@ impl HeaveGQLTree {
     }
 
     fn render_field_in_query(&self, name: &str, field_type: &str, depth: u8) -> Option<String> {
-        if depth > 3 {
+        if depth > self.depth {
             return None;
         }
         // I'm pretty sure I don't care if anything is nullable or not
@@ -974,15 +982,17 @@ fn generate_graphql(args: GenerateGraphqlArgs) -> Result<(), Box<dyn Error>> {
     if graphql.errors().len() > 0 {
         return Err("GraphQL spec is not valid".into());
     }
-    let result = generate_graphql_inner(graphql);
+    let depth = args.depth;
+    let result = generate_graphql_inner(graphql, depth);
     write_outputs(&result.outputs, &template, &output_directory)?;
     Ok(())
 }
 
 fn generate_graphql_inner(
     graphql: apollo_parser::SyntaxTree<apollo_parser::cst::Document>,
+    depth: u8,
 ) -> GenerateResult {
-    let tree = HeaveGQLTree::new(graphql);
+    let tree = HeaveGQLTree::new(graphql, depth);
     let outputs = tree.build_outputs().unwrap();
 
     GenerateResult {
