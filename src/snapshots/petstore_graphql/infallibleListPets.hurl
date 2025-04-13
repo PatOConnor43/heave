@@ -1,0 +1,30 @@
+POST {{ baseurl }}
+Authorization: Bearer {{ authorization }}
+```graphql
+query {
+  infallibleListPets(limit: {{ infallibleListPets_limit }}) {
+    pets {
+      id
+      name
+      tag
+      friend {
+        id
+        name
+        tag
+        friend {
+          id
+          name
+          tag
+          friend {
+            id
+            name
+            tag
+          }
+        }
+      }
+    }
+    nextPage
+  }
+}
+```
+HTTP 200

@@ -1,6 +1,5 @@
 ---
 source: src/main.rs
-assertion_line: 1623
 input_file: src/snapshots/petstore_graphql/getPetById.hurl
 ---
 POST {{ baseurl }}

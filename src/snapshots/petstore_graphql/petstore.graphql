@@ -7,6 +7,7 @@ type Pet {
   id: ID!
   name: String!
   tag: String
+  friend: Pet
 }
 
 """
@@ -25,6 +26,9 @@ type PetsResponse {
   nextPage: String
 }
 
+union PetsResult = PetsResponse | Error
+union PetResult = Pet | Error
+
 """
 Input type for creating a new pet
 """
@@ -37,7 +41,8 @@ type Query {
   """
   List all pets with optional pagination
   """
-  listPets(limit: Int): PetsResponse!
+  infallibleListPets(limit: Int): PetsResponse!
+
   
   """
   Get information about a specific pet by ID
@@ -48,9 +53,14 @@ type Query {
 
 extend type Query {
   """
-  Get a pet by ID
+  Get information about a specific pet by ID, but may return an error
   """
-  getPetById(id: ID!): Pet
+  fallibleGetPet(id: ID!): PetResult!
+
+  """
+  List all pets with optional pagination, but may return an error
+  """
+  fallibleListPets(limit: Int): PetsResult!
 }
 
 type Mutation {
