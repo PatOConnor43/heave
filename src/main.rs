@@ -158,8 +158,7 @@ struct GraphQLQuery {
 #[derive(Debug)]
 struct GraphQLQueryArgument {
     name: String,
-    nullable: bool,
-    r#type: String,
+    argument_placeholder_name: String,
 }
 
 #[derive(Debug)]
@@ -214,18 +213,17 @@ impl HeaveGQLTree {
                     }
                     if let Some(fields) = object_type_definition.fields_definition() {
                         for fd in fields.field_definitions() {
+                            let query_name = fd.name().unwrap().source_string();
                             let mut arguments: Vec<GraphQLQueryArgument> = vec![];
                             if let Some(args) = fd.arguments_definition() {
                                 for arg in args.input_value_definitions() {
-                                    let nullable = !matches!(
-                                        arg.ty().unwrap(),
-                                        apollo_parser::cst::Type::NonNullType(_)
-                                    );
-                                    let t = arg.ty().unwrap().source_string();
+                                    let arg_name = arg.name().unwrap().source_string();
                                     let arg = GraphQLQueryArgument {
-                                        name: arg.name().unwrap().source_string(),
-                                        nullable,
-                                        r#type: t,
+                                        name: arg_name.clone(),
+                                        argument_placeholder_name: format!(
+                                            "HEAVE_ARGUMENT_START{}_{}HEAVE_ARGUMENT_END",
+                                            query_name, arg_name
+                                        ),
                                     };
                                     arguments.push(arg);
                                 }
@@ -250,18 +248,17 @@ impl HeaveGQLTree {
                     }
                     if let Some(fields) = object_type_extension.fields_definition() {
                         for fd in fields.field_definitions() {
+                            let query_name = fd.name().unwrap().source_string();
                             let mut arguments: Vec<GraphQLQueryArgument> = vec![];
                             if let Some(args) = fd.arguments_definition() {
                                 for arg in args.input_value_definitions() {
-                                    let nullable = !matches!(
-                                        arg.ty().unwrap(),
-                                        apollo_parser::cst::Type::NonNullType(_)
-                                    );
-                                    let t = arg.ty().unwrap().source_string();
+                                    let arg_name = arg.name().unwrap().source_string();
                                     let arg = GraphQLQueryArgument {
-                                        name: arg.name().unwrap().source_string(),
-                                        nullable,
-                                        r#type: t,
+                                        name: arg_name.clone(),
+                                        argument_placeholder_name: format!(
+                                            "HEAVE_ARGUMENT_START{}_{}HEAVE_ARGUMENT_END",
+                                            query_name, arg_name
+                                        ),
                                     };
                                     arguments.push(arg);
                                 }
@@ -545,8 +542,12 @@ impl HeaveGQLTree {
         let mut diagnostics = vec![];
         for query in &self.queries {
             let name = format!("{}.hurl", query.name);
-            let inner_request_body =
-                self.render_field_in_query(query.name.as_str(), query.return_type.as_str(), 0);
+            let inner_request_body = self.render_field_in_query(
+                query.name.as_str(),
+                query.return_type.as_str(),
+                &query.arguments,
+                0,
+            );
             if inner_request_body.is_none() {
                 diagnostics.push(HeaveError::FailedGraphQLQueryGeneration {
                     query: query.name.clone(),
@@ -555,6 +556,7 @@ impl HeaveGQLTree {
             }
             let inner_request_body = inner_request_body.unwrap();
             let request_body = format!("query {{{}}}", inner_request_body,);
+            //dbg!(&request_body);
             let parser = apollo_parser::Parser::new(request_body.as_str());
             let graphql = parser.parse();
             if graphql.errors().len() > 0 {
@@ -564,6 +566,9 @@ impl HeaveGQLTree {
                 continue;
             }
             let request_body = Self::format_graphql_query(&request_body);
+            let request_body = request_body
+                .replace("\"HEAVE_ARGUMENT_START", "{{ ")
+                .replace("HEAVE_ARGUMENT_END\"", " }}");
 
             let output = Output {
                 expected_status_code: 200,
@@ -582,7 +587,13 @@ impl HeaveGQLTree {
         (outputs, diagnostics)
     }
 
-    fn render_field_in_query(&self, name: &str, field_type: &str, depth: u8) -> Option<String> {
+    fn render_field_in_query(
+        &self,
+        name: &str,
+        field_type: &str,
+        arguments: &[GraphQLQueryArgument],
+        depth: u8,
+    ) -> Option<String> {
         if depth > self.depth {
             return None;
         }
@@ -594,14 +605,14 @@ impl HeaveGQLTree {
                 .unwrap()
                 .strip_suffix("]")
                 .unwrap();
-            let body = self.render_field_in_query(name, unwrapped_list_type, depth);
+            let body = self.render_field_in_query(name, unwrapped_list_type, arguments, depth);
             return body;
         }
         if let Some(t) = self.type_map.get(&field_type) {
             if let Some(members) = &t.union_metadata {
                 let mut union_bodies = vec![];
                 for member in &members.members {
-                    let body = self.render_field_in_query("", member, depth);
+                    let body = self.render_field_in_query("", member, &[], depth);
                     if body.is_none() {
                         continue;
                     }
@@ -619,7 +630,8 @@ impl HeaveGQLTree {
                 for field in t.fields.iter() {
                     let field_name = field.name.as_str();
                     let field_type = field.r#type.as_str();
-                    let inner_body = self.render_field_in_query(field_name, field_type, depth + 1);
+                    let inner_body =
+                        self.render_field_in_query(field_name, field_type, &[], depth + 1);
                     if inner_body.is_none() {
                         continue;
                     }
@@ -628,10 +640,23 @@ impl HeaveGQLTree {
                 if field_bodies.is_empty() {
                     return None;
                 }
-                return Some(format!("{} {{{}}}", name, field_bodies.join("\n")));
+                if arguments.is_empty() {
+                    return Some(format!("{} {{{}}}", name, field_bodies.join("\n")));
+                } else {
+                    let arguments_string = arguments
+                        .iter()
+                        .map(|arg| format!("{}: \"{}\"", arg.name, arg.argument_placeholder_name))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    return Some(format!(
+                        "{}({}) {{{}}}",
+                        name,
+                        arguments_string,
+                        field_bodies.join("\n")
+                    ));
+                }
             }
         }
-        println!("Field type not found: {}", field_type);
 
         None
     }
