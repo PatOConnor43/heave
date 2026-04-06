@@ -11,5 +11,5 @@ HTTP 200
 [Asserts]
 jsonpath "$" isCollection
 #jsonpath "$.code" isInteger
-#jsonpath "$.type" isString
 #jsonpath "$.message" isString
+#jsonpath "$.type" isString

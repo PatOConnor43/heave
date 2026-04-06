@@ -6,9 +6,9 @@ HTTP 200
 
 [Asserts]
 jsonpath "$" isCollection
+#jsonpath "$.complete" isBoolean
 #jsonpath "$.id" isInteger
 #jsonpath "$.petId" isInteger
 #jsonpath "$.quantity" isInteger
 #jsonpath "$.shipDate" isString
 #jsonpath "$.status" isString
-#jsonpath "$.complete" isBoolean

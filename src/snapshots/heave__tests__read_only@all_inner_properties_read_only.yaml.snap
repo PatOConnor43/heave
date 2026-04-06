@@ -17,9 +17,9 @@ GenerateResult {
             query_parameters: [],
             asserts: [
                 "jsonpath \"$\" isCollection",
-                "#jsonpath \"$.name\" isString",
                 "#jsonpath \"$.B\" isCollection",
                 "#jsonpath \"$.B.name\" isString",
+                "#jsonpath \"$.name\" isString",
             ],
             request_body_parameter: "{\n  \"B\": {}\n}",
         },

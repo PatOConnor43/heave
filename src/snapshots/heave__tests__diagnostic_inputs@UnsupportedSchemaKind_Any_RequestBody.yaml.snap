@@ -21,14 +21,5 @@ GenerateResult {
             request_body_parameter: "",
         },
     ],
-    diagnostics: [
-        UnsupportedSchemaKind {
-            context: DiagnosticContext {
-                operation: "addPet",
-                path: "/pets",
-            },
-            kind: "Any",
-            jsonpath: "",
-        },
-    ],
+    diagnostics: [],
 }
