@@ -1,0 +1,20 @@
+GET {{ baseurl }}/pets
+Authorization: Bearer {{ authorization }}
+Prefer: code=200
+
+HTTP 200
+
+[Asserts]
+jsonpath "$" isCollection
+#jsonpath "$[0]" isCollection
+#jsonpath "$[0].age" isInteger
+#jsonpath "$[0].aliases" isCollection
+#jsonpath "$[0].aliases[0]" isString
+#jsonpath "$[0].code" isInteger
+#jsonpath "$[0].code" isString
+#jsonpath "$[0].id" isInteger
+#jsonpath "$[0].metadata" isCollection
+#jsonpath "$[0].metadata.source" isString
+#jsonpath "$[0].name" isString
+#jsonpath "$[0].tag" isString
+#jsonpath "$[0].weight" isNumber

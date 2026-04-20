@@ -1,0 +1,29 @@
+---
+source: src/main.rs
+input_file: src/snapshots/oas31_diagnostics/MultipleTypes_ResponseBody.yaml
+---
+GenerateResult {
+    outputs: [
+        Output {
+            expected_status_code: 200,
+            name: "getItem_200.hurl",
+            hurl_path: "/items",
+            oas_path: "/items",
+            oas_operation_id: Some(
+                "getItem",
+            ),
+            method: "GET",
+            header_parameters: [],
+            query_parameters: [],
+            asserts: [
+                "jsonpath \"$\" isCollection",
+                "jsonpath \"$.id\" isInteger",
+                "#jsonpath \"$.label\" isString",
+                "#jsonpath \"$.value\" isInteger",
+                "#jsonpath \"$.value\" isString",
+            ],
+            request_body_parameter: "",
+        },
+    ],
+    diagnostics: [],
+}

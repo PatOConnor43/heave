@@ -913,6 +913,22 @@ fn generate_assert_from_schema(
     };
 
     // Check composition keywords first
+    let composition_count = [
+        !schema.one_of.is_empty(),
+        !schema.all_of.is_empty(),
+        !schema.any_of.is_empty(),
+    ]
+    .iter()
+    .filter(|&&x| x)
+    .count();
+    if composition_count > 1 {
+        diagnostics.push(HeaveError::UnsupportedSchemaKind {
+            context: diagnostic_context.clone(),
+            kind: "Any".to_string(),
+            jsonpath: jsonpath.to_string(),
+        });
+        return (asserts, diagnostics);
+    }
     if !schema.one_of.is_empty() {
         diagnostics.push(HeaveError::UnsupportedSchemaKind {
             context: diagnostic_context.clone(),
@@ -951,8 +967,8 @@ fn generate_assert_from_schema(
     }
 
     // Determine the primary type from schema_type
-    let primary_type = match &schema.schema_type {
-        Some(type_set) => get_primary_type(type_set),
+    let type_set = match &schema.schema_type {
+        Some(type_set) => type_set,
         None => {
             diagnostics.push(HeaveError::UnsupportedSchemaKind {
                 context: diagnostic_context.clone(),
@@ -962,6 +978,21 @@ fn generate_assert_from_schema(
             return (asserts, diagnostics);
         }
     };
+
+    let non_null_types = get_non_null_types(type_set);
+    if non_null_types.len() > 1 {
+        for t in &non_null_types {
+            if let Some(predicate) = schema_type_to_hurl_predicate(*t) {
+                asserts.push(format!(
+                    "#jsonpath \"{}\" {}",
+                    jsonpath, predicate
+                ));
+            }
+        }
+        return (asserts, diagnostics);
+    }
+
+    let primary_type = get_primary_type(type_set);
 
     match primary_type {
         Some(SchemaType::Boolean) => {
@@ -1057,9 +1088,28 @@ fn get_primary_type(type_set: &SchemaTypeSet) -> Option<SchemaType> {
     match type_set {
         SchemaTypeSet::Single(t) => Some(*t),
         SchemaTypeSet::Multiple(types) => {
-            // Return the first non-null type
             types.iter().find(|t| **t != SchemaType::Null).copied()
         }
+    }
+}
+
+fn get_non_null_types(type_set: &SchemaTypeSet) -> Vec<SchemaType> {
+    match type_set {
+        SchemaTypeSet::Single(t) => vec![*t],
+        SchemaTypeSet::Multiple(types) => {
+            types.iter().filter(|t| **t != SchemaType::Null).copied().collect()
+        }
+    }
+}
+
+fn schema_type_to_hurl_predicate(t: SchemaType) -> Option<&'static str> {
+    match t {
+        SchemaType::Boolean => Some("isBoolean"),
+        SchemaType::String => Some("isString"),
+        SchemaType::Number => Some("isNumber"),
+        SchemaType::Integer => Some("isInteger"),
+        SchemaType::Array | SchemaType::Object => Some("isCollection"),
+        _ => None,
     }
 }
 
@@ -1220,6 +1270,22 @@ fn generate_request_body_from_schema(
     let mut diagnostics = vec![];
 
     // Check composition keywords first
+    let composition_count = [
+        !schema.one_of.is_empty(),
+        !schema.all_of.is_empty(),
+        !schema.any_of.is_empty(),
+    ]
+    .iter()
+    .filter(|&&x| x)
+    .count();
+    if composition_count > 1 {
+        diagnostics.push(HeaveError::UnsupportedSchemaKind {
+            context: diagnostic_context.clone(),
+            kind: "Any".to_string(),
+            jsonpath: name.unwrap_or("".to_string()),
+        });
+        return (None, diagnostics);
+    }
     if !schema.one_of.is_empty() {
         diagnostics.push(HeaveError::UnsupportedSchemaKind {
             context: diagnostic_context.clone(),
@@ -1577,6 +1643,37 @@ mod tests {
             glob!("snapshots/allof/*.hurl", |path| {
                 let input = std::fs::read_to_string(path).unwrap();
                 assert_snapshot!(input);
+            });
+        });
+        Ok(())
+    }
+
+    #[test]
+    fn oas31_petstore() -> Result<(), Box<dyn Error>> {
+        let spec: Spec = spec_from_yaml!("src/snapshots/oas31/petstore.yaml");
+        let output_directory = PathBuf::from_str("src/snapshots/oas31")?;
+        let result = generate(spec);
+        write_outputs(&result.outputs, DEFAULT_HURL_TEMPLATE, &output_directory)?;
+        let mut settings = insta::Settings::clone_current();
+        settings.set_omit_expression(true);
+        settings.bind(|| {
+            glob!("snapshots/oas31/*.hurl", |path| {
+                let input = std::fs::read_to_string(path).unwrap();
+                assert_snapshot!(input);
+            });
+        });
+        Ok(())
+    }
+
+    #[test]
+    fn oas31_diagnostic_inputs() -> Result<(), Box<dyn Error>> {
+        let mut settings = insta::Settings::clone_current();
+        settings.set_omit_expression(true);
+        settings.bind(|| {
+            glob!("snapshots/oas31_diagnostics/*.yaml", |path| {
+                let input: Spec = spec_from_yaml!(&path);
+                let result = generate(input);
+                assert_debug_snapshot!(result);
             });
         });
         Ok(())
