@@ -1,7 +1,10 @@
 use clap::{Args, Parser, Subcommand};
 use itertools::Itertools;
 use minijinja::{context, Environment};
-use openapiv3::{MediaType, OpenAPI, ReferenceOr};
+use oas3::spec::{
+    MediaType, ObjectOrReference, ObjectSchema, Parameter, ParameterIn, RequestBody, Response,
+    SchemaType, SchemaTypeSet, Spec,
+};
 use std::{
     error::Error,
     path::{Path, PathBuf},
@@ -483,23 +486,23 @@ fn main() -> Result<(), Box<dyn Error>> {
             let input_extension = match &input_path.extension() {
                 Some(ext) => match ext.to_str() {
                     Some("json") => Ok(InputSpecExtension::Json),
-                    Some("yaml") => Ok(InputSpecExtension::Yaml),
+                    Some("yaml") | Some("yml") => Ok(InputSpecExtension::Yaml),
                     _ => Err("Input spec must be json or yaml file"),
                 },
                 None => Err("Input spec must be json or yaml file"),
             }?;
 
             let content = std::fs::read_to_string(input_path)?;
-            let openapi: OpenAPI = match input_extension {
+            let spec: Spec = match input_extension {
                 InputSpecExtension::Json => {
-                    serde_json::from_str(&content).expect("Could not deserialize input as json")
+                    oas3::from_json(&content).expect("Could not deserialize input as json")
                 }
                 InputSpecExtension::Yaml => {
-                    serde_yaml::from_str(&content).expect("Could not deserialize input as yaml")
+                    oas3::from_yaml(&content).expect("Could not deserialize input as yaml")
                 }
             };
 
-            let result = generate(openapi);
+            let result = generate(spec);
             let mut final_outputs = result.outputs;
             if args.include_paths.is_some() {
                 let include_paths = args.include_paths.unwrap();
@@ -633,10 +636,10 @@ fn write_outputs(
     Ok(())
 }
 
-fn generate(openapi: openapiv3::OpenAPI) -> GenerateResult {
+fn generate(spec: Spec) -> GenerateResult {
     let mut outputs: Vec<Output> = vec![];
     let mut diagnostics: Vec<HeaveError> = vec![];
-    for (path, method, operation) in openapi.operations() {
+    for (path, method, operation) in spec.operations() {
         let name = operation
             .operation_id
             .clone()
@@ -650,18 +653,18 @@ fn generate(openapi: openapiv3::OpenAPI) -> GenerateResult {
         };
         for parameter in operation.parameters.iter() {
             match parameter {
-                openapiv3::ReferenceOr::Reference { reference } => {
-                    let parameter_name = reference.split("#/components/parameters/").nth(1);
+                ObjectOrReference::Ref { ref_path, .. } => {
+                    let parameter_name = ref_path.split("#/components/parameters/").nth(1);
                     if parameter_name.is_none() {
                         diagnostics.push(HeaveError::MalformedParameterReference {
                             operation: name.to_string(),
                             path: path.to_string(),
-                            reference: reference.to_string(),
+                            reference: ref_path.to_string(),
                         });
                         continue;
                     }
                     let parameter_name = parameter_name.unwrap();
-                    let components = &openapi.components;
+                    let components = &spec.components;
                     if components.is_none() {
                         diagnostics.push(HeaveError::MissingComponents);
                         continue;
@@ -671,41 +674,30 @@ fn generate(openapi: openapiv3::OpenAPI) -> GenerateResult {
                     if found_parameter.is_none() {
                         diagnostics.push(HeaveError::MissingParameterReference {
                             context: context.clone(),
-                            reference: reference.to_string(),
+                            reference: ref_path.to_string(),
                         });
                         continue;
                     }
                     let found_parameter = found_parameter.unwrap();
-                    // TODO add support for reference parameters
-                    if found_parameter.as_item().is_none() {
-                        continue;
-                    }
-                    let found_parameter = found_parameter.as_item().unwrap();
                     match found_parameter {
-                        openapiv3::Parameter::Query { parameter_data, .. } => {
-                            query_parameters.push(parameter_data.name.to_string());
+                        ObjectOrReference::Object(param) => {
+                            classify_parameter(param, &mut query_parameters, &mut header_parameters);
                         }
-                        openapiv3::Parameter::Header { parameter_data, .. } => {
-                            header_parameters.push(parameter_data.name.to_string());
+                        // TODO add support for nested reference parameters
+                        ObjectOrReference::Ref { .. } => {
+                            continue;
                         }
-                        _ => {}
                     }
                 }
-                openapiv3::ReferenceOr::Item(item) => match item {
-                    openapiv3::Parameter::Query { parameter_data, .. } => {
-                        query_parameters.push(parameter_data.name.to_string());
-                    }
-                    openapiv3::Parameter::Header { parameter_data, .. } => {
-                        header_parameters.push(parameter_data.name.to_string());
-                    }
-                    _ => {}
-                },
+                ObjectOrReference::Object(param) => {
+                    classify_parameter(param, &mut query_parameters, &mut header_parameters);
+                }
             }
         }
 
         while let Some(request_body) = &operation.request_body {
             let (request_body, mut inner_diagnostics) =
-                resolve_request_body(&openapi, request_body, &context);
+                resolve_request_body(&spec, request_body, &context);
             diagnostics.append(&mut inner_diagnostics);
             if request_body.is_none() {
                 break;
@@ -733,14 +725,14 @@ fn generate(openapi: openapiv3::OpenAPI) -> GenerateResult {
                 break;
             }
             let schema = schema.as_ref().unwrap();
-            let (schema, mut inner_diagnostics) = resolve_schema(&openapi, schema, &context);
+            let (schema, mut inner_diagnostics) = resolve_schema(&spec, schema, &context);
             diagnostics.append(&mut inner_diagnostics);
             if schema.is_none() {
                 break;
             }
             let schema = schema.unwrap();
             let request_body_parameter_tuple =
-                generate_request_body_from_schema(&openapi, schema, None, &context, "$");
+                generate_request_body_from_schema(&spec, schema, None, &context, "$");
             request_body_parameter = request_body_parameter_tuple.0;
             let mut inner_diagnostics = request_body_parameter_tuple.1;
             diagnostics.append(&mut inner_diagnostics);
@@ -754,75 +746,36 @@ fn generate(openapi: openapiv3::OpenAPI) -> GenerateResult {
             break;
         }
 
-        for (status_code, response) in operation.responses.responses.iter() {
-            let mut asserts: Vec<String> = vec![];
-            match status_code {
-                openapiv3::StatusCode::Range(_) => {
+        if let Some(responses) = &operation.responses {
+            for (status_code_str, response) in responses.iter() {
+                let mut asserts: Vec<String> = vec![];
+                // Check if this is a range like "2XX"
+                let parsed_code: Option<u16> = status_code_str.parse().ok();
+                if parsed_code.is_none() {
                     diagnostics.push(HeaveError::UnsupportedStatusCodeRange {
                         context: context.clone(),
-                    })
+                    });
+                    continue;
                 }
-                openapiv3::StatusCode::Code(code) => {
-                    let name = format!("{}_{}.hurl", name, code);
-                    let (response, mut inner_diagnostics) =
-                        resolve_response(&openapi, response, &context);
-                    diagnostics.append(&mut inner_diagnostics);
-                    if response.is_none() {
-                        continue;
+                let code = parsed_code.unwrap();
+                let name = format!("{}_{}.hurl", name, code);
+                let (response, mut inner_diagnostics) =
+                    resolve_response(&spec, response, &context);
+                diagnostics.append(&mut inner_diagnostics);
+                if response.is_none() {
+                    continue;
+                }
+                let response = response.unwrap();
+                let mut media_type: Option<&MediaType> = None;
+                for (media_type_key, media_type_val) in response.content.iter() {
+                    if media_type_key.starts_with("application/json") {
+                        media_type = Some(media_type_val);
+                        break;
                     }
-                    let response = response.unwrap();
-                    let mut media_type: Option<&MediaType> = None;
-                    for (media_type_key, media_type_val) in response.content.iter() {
-                        if media_type_key.starts_with("application/json") {
-                            media_type = Some(media_type_val);
-                            break;
-                        }
-                    }
-                    if media_type.is_none() {
-                        let output = Output {
-                            expected_status_code: *code,
-                            name,
-                            hurl_path: path.to_string().replace("{", "{{").replace("}", "}}"),
-                            oas_path: path.to_string(),
-                            oas_operation_id: operation.operation_id.clone(),
-                            method: method.to_string().to_uppercase(),
-                            header_parameters: header_parameters.clone(),
-                            query_parameters: query_parameters.clone(),
-                            asserts: vec![],
-                            request_body_parameter: request_body_parameter
-                                .clone()
-                                .unwrap_or("".to_string()),
-                        };
-                        outputs.push(output);
-                        continue;
-                    }
-                    let schema = media_type.unwrap().schema.as_ref();
-                    if schema.is_none() {
-                        diagnostics.push(HeaveError::MissingSchemaDefinitionForMediaType {
-                            context: context.clone(),
-                        });
-                        continue;
-                    }
-                    let schema = schema.unwrap();
-                    let (schema, mut inner_diagnostics) =
-                        resolve_schema(&openapi, schema, &context);
-                    diagnostics.append(&mut inner_diagnostics);
-                    if schema.is_none() {
-                        continue;
-                    }
-                    let schema = schema.unwrap();
-                    let is_required = true;
-                    let (mut new_asserts, mut new_diagnostics) =
-                        generate_assert_from_schema(&openapi, schema, "$", is_required, &context);
-                    asserts.append(&mut new_asserts);
-                    diagnostics.append(&mut new_diagnostics);
-
-                    // It's possible for identical asserts to be generated when dealing with
-                    // polymorphic attributes (like allOf). This cleans that up.
-                    let asserts: Vec<_> = asserts.into_iter().unique().collect();
-
+                }
+                if media_type.is_none() {
                     let output = Output {
-                        expected_status_code: *code,
+                        expected_status_code: code,
                         name,
                         hurl_path: path.to_string().replace("{", "{{").replace("}", "}}"),
                         oas_path: path.to_string(),
@@ -830,14 +783,55 @@ fn generate(openapi: openapiv3::OpenAPI) -> GenerateResult {
                         method: method.to_string().to_uppercase(),
                         header_parameters: header_parameters.clone(),
                         query_parameters: query_parameters.clone(),
-                        asserts: asserts.clone(),
+                        asserts: vec![],
                         request_body_parameter: request_body_parameter
                             .clone()
                             .unwrap_or("".to_string()),
                     };
-                    outputs.push(output)
+                    outputs.push(output);
+                    continue;
                 }
-            };
+                let schema = media_type.unwrap().schema.as_ref();
+                if schema.is_none() {
+                    diagnostics.push(HeaveError::MissingSchemaDefinitionForMediaType {
+                        context: context.clone(),
+                    });
+                    continue;
+                }
+                let schema = schema.unwrap();
+                let (schema, mut inner_diagnostics) =
+                    resolve_schema(&spec, schema, &context);
+                diagnostics.append(&mut inner_diagnostics);
+                if schema.is_none() {
+                    continue;
+                }
+                let schema = schema.unwrap();
+                let is_required = true;
+                let (mut new_asserts, mut new_diagnostics) =
+                    generate_assert_from_schema(&spec, schema, "$", is_required, &context);
+                asserts.append(&mut new_asserts);
+                diagnostics.append(&mut new_diagnostics);
+
+                // It's possible for identical asserts to be generated when dealing with
+                // polymorphic attributes (like allOf). This cleans that up.
+                let asserts: Vec<_> = asserts.into_iter().unique().collect();
+
+                let output = Output {
+                    expected_status_code: code,
+                    name,
+                    hurl_path: path.to_string().replace("{", "{{").replace("}", "}}"),
+                    oas_path: path.to_string(),
+                    oas_operation_id: operation.operation_id.clone(),
+                    method: method.to_string().to_uppercase(),
+                    header_parameters: header_parameters.clone(),
+                    query_parameters: query_parameters.clone(),
+                    asserts: asserts.clone(),
+                    request_body_parameter: request_body_parameter
+                        .clone()
+                        .unwrap_or("".to_string()),
+                };
+                outputs.push(output)
+            }
         }
     }
 
@@ -847,15 +841,31 @@ fn generate(openapi: openapiv3::OpenAPI) -> GenerateResult {
     }
 }
 
+fn classify_parameter(
+    param: &Parameter,
+    query_parameters: &mut Vec<String>,
+    header_parameters: &mut Vec<String>,
+) {
+    match param.location {
+        ParameterIn::Query => {
+            query_parameters.push(param.name.to_string());
+        }
+        ParameterIn::Header => {
+            header_parameters.push(param.name.to_string());
+        }
+        _ => {}
+    }
+}
+
 fn generate_assert_from_schema(
-    openapi: &openapiv3::OpenAPI,
-    schema: &openapiv3::Schema,
+    spec: &Spec,
+    schema: &ObjectSchema,
     jsonpath: &str,
     is_required: bool,
     diagnostic_context: &DiagnosticContext,
 ) -> (Vec<String>, Vec<HeaveError>) {
     // We don't need to generate an assert for a field that is write only
-    if schema.schema_data.write_only {
+    if schema.write_only.unwrap_or(false) {
         return (vec![], vec![]);
     }
 
@@ -901,80 +911,113 @@ fn generate_assert_from_schema(
             default
         )
     };
-    match &schema.schema_kind {
-        openapiv3::SchemaKind::OneOf { .. } => {
-            diagnostics.push(HeaveError::UnsupportedSchemaKind {
-                context: diagnostic_context.clone(),
-                kind: "OneOf".to_string(),
-                jsonpath: jsonpath.to_string(),
-            })
-        }
-        openapiv3::SchemaKind::AllOf { all_of } => {
-            for all_of_schema_or_ref in all_of {
-                let (all_of_schema, mut inner_diagnostics) =
-                    resolve_schema(openapi, all_of_schema_or_ref, diagnostic_context);
-                diagnostics.append(&mut inner_diagnostics);
 
-                if let Some(s) = all_of_schema {
-                    let (mut child_asserts, mut child_diagnostics) = generate_assert_from_schema(
-                        openapi,
-                        s,
-                        jsonpath,
-                        is_required,
-                        diagnostic_context,
-                    );
-                    asserts.append(&mut child_asserts);
-                    diagnostics.append(&mut child_diagnostics);
-                }
-            }
-        }
-        openapiv3::SchemaKind::AnyOf { .. } => {
-            diagnostics.push(HeaveError::UnsupportedSchemaKind {
-                context: diagnostic_context.clone(),
-                kind: "AnyOf".to_string(),
-                jsonpath: jsonpath.to_string(),
-            })
-        }
-        openapiv3::SchemaKind::Not { .. } => diagnostics.push(HeaveError::UnsupportedSchemaKind {
-            context: diagnostic_context.clone(),
-            kind: "Not".to_string(),
-            jsonpath: jsonpath.to_string(),
-        }),
-        openapiv3::SchemaKind::Any(_) => diagnostics.push(HeaveError::UnsupportedSchemaKind {
+    // Check composition keywords first
+    let composition_count = [
+        !schema.one_of.is_empty(),
+        !schema.all_of.is_empty(),
+        !schema.any_of.is_empty(),
+    ]
+    .iter()
+    .filter(|&&x| x)
+    .count();
+    if composition_count > 1 {
+        diagnostics.push(HeaveError::UnsupportedSchemaKind {
             context: diagnostic_context.clone(),
             kind: "Any".to_string(),
             jsonpath: jsonpath.to_string(),
-        }),
-        openapiv3::SchemaKind::Type(schema_type) => {
-            match schema_type {
-                openapiv3::Type::Boolean(_) => {
-                    asserts.push(is_required_formatter(jsonpath, "isBoolean", is_required))
-                }
-                openapiv3::Type::String(_) => {
-                    asserts.push(is_required_formatter(jsonpath, "isString", is_required))
-                }
-                openapiv3::Type::Number(_) => {
-                    asserts.push(is_required_formatter(jsonpath, "isNumber", is_required))
-                }
-                openapiv3::Type::Integer(_) => {
-                    asserts.push(is_required_formatter(jsonpath, "isInteger", is_required))
-                }
-                openapiv3::Type::Array(a) => {
-                    asserts.push(is_required_formatter(jsonpath, "isCollection", is_required));
-                    let items = &a.items;
-                    if items.is_none() {
-                        return (asserts, diagnostics);
-                    }
-                    let items = items.as_ref().unwrap();
-                    let unboxed = items.clone().unbox();
-                    let (inner, mut inner_diagnostics) =
-                        resolve_schema(openapi, &unboxed, diagnostic_context);
-                    diagnostics.append(&mut inner_diagnostics);
-                    if inner.is_none() {
-                        return (asserts, diagnostics);
-                    }
-                    let inner = inner.unwrap();
+        });
+        return (asserts, diagnostics);
+    }
+    if !schema.one_of.is_empty() {
+        diagnostics.push(HeaveError::UnsupportedSchemaKind {
+            context: diagnostic_context.clone(),
+            kind: "OneOf".to_string(),
+            jsonpath: jsonpath.to_string(),
+        });
+        return (asserts, diagnostics);
+    }
+    if !schema.all_of.is_empty() {
+        for all_of_schema_or_ref in &schema.all_of {
+            let (all_of_schema, mut inner_diagnostics) =
+                resolve_schema(spec, all_of_schema_or_ref, diagnostic_context);
+            diagnostics.append(&mut inner_diagnostics);
 
+            if let Some(s) = all_of_schema {
+                let (mut child_asserts, mut child_diagnostics) = generate_assert_from_schema(
+                    spec,
+                    s,
+                    jsonpath,
+                    is_required,
+                    diagnostic_context,
+                );
+                asserts.append(&mut child_asserts);
+                diagnostics.append(&mut child_diagnostics);
+            }
+        }
+        return (asserts, diagnostics);
+    }
+    if !schema.any_of.is_empty() {
+        diagnostics.push(HeaveError::UnsupportedSchemaKind {
+            context: diagnostic_context.clone(),
+            kind: "AnyOf".to_string(),
+            jsonpath: jsonpath.to_string(),
+        });
+        return (asserts, diagnostics);
+    }
+
+    // Determine the primary type from schema_type
+    let type_set = match &schema.schema_type {
+        Some(type_set) => type_set,
+        None => {
+            diagnostics.push(HeaveError::UnsupportedSchemaKind {
+                context: diagnostic_context.clone(),
+                kind: "Any".to_string(),
+                jsonpath: jsonpath.to_string(),
+            });
+            return (asserts, diagnostics);
+        }
+    };
+
+    let non_null_types = get_non_null_types(type_set);
+    if non_null_types.len() > 1 {
+        for t in &non_null_types {
+            if let Some(predicate) = schema_type_to_hurl_predicate(*t) {
+                asserts.push(format!(
+                    "#jsonpath \"{}\" {}",
+                    jsonpath, predicate
+                ));
+            }
+        }
+        return (asserts, diagnostics);
+    }
+
+    let primary_type = get_primary_type(type_set);
+
+    match primary_type {
+        Some(SchemaType::Boolean) => {
+            asserts.push(is_required_formatter(jsonpath, "isBoolean", is_required))
+        }
+        Some(SchemaType::String) => {
+            asserts.push(is_required_formatter(jsonpath, "isString", is_required))
+        }
+        Some(SchemaType::Number) => {
+            asserts.push(is_required_formatter(jsonpath, "isNumber", is_required))
+        }
+        Some(SchemaType::Integer) => {
+            asserts.push(is_required_formatter(jsonpath, "isInteger", is_required))
+        }
+        Some(SchemaType::Array) => {
+            asserts.push(is_required_formatter(jsonpath, "isCollection", is_required));
+            let items = &schema.items;
+            if items.is_none() {
+                return (asserts, diagnostics);
+            }
+            let items = items.as_ref().unwrap();
+            let inner = resolve_schema_from_schema(spec, items, diagnostic_context);
+            match inner {
+                (Some(inner), mut inner_diagnostics) => {
+                    diagnostics.append(&mut inner_diagnostics);
                     // Take the existing path and index the first element in the list.
                     let inner_jsonpath = format!("{}[0]", jsonpath);
 
@@ -982,7 +1025,7 @@ fn generate_assert_from_schema(
                     let is_required = false;
 
                     let (mut child_asserts, mut child_diagnostics) = generate_assert_from_schema(
-                        openapi,
+                        spec,
                         inner,
                         inner_jsonpath.as_ref(),
                         is_required,
@@ -991,64 +1034,119 @@ fn generate_assert_from_schema(
                     asserts.append(&mut child_asserts);
                     diagnostics.append(&mut child_diagnostics);
                 }
-                openapiv3::Type::Object(ob) => {
-                    asserts.push(is_required_formatter(jsonpath, "isCollection", is_required));
-                    let properties = &ob.properties;
-                    for (name, prop) in properties.iter() {
-                        let unboxed = prop.clone().unbox();
-                        let (inner, mut inner_diagnostics) =
-                            resolve_schema(openapi, &unboxed, diagnostic_context);
-                        diagnostics.append(&mut inner_diagnostics);
-                        if inner.is_none() {
-                            break;
-                        }
-                        let inner = inner.unwrap();
-
-                        // There are characters that aren't allowed in jsonpath so we change the format
-                        // if they're present.
-                        let inner_jsonpath = if name.chars().any(|c| c == '@' || c == '$') {
-                            format!("{}['{}']", jsonpath, name)
-                        } else {
-                            format!("{}.{}", jsonpath, name)
-                        };
-                        let child_is_required = is_required && ob.required.contains(name);
-                        let (mut child_asserts, mut child_diagnostics) =
-                            generate_assert_from_schema(
-                                openapi,
-                                inner,
-                                inner_jsonpath.as_ref(),
-                                child_is_required,
-                                diagnostic_context,
-                            );
-                        asserts.append(&mut child_asserts);
-                        diagnostics.append(&mut child_diagnostics);
-                    }
+                (None, mut inner_diagnostics) => {
+                    diagnostics.append(&mut inner_diagnostics);
+                    return (asserts, diagnostics);
                 }
             }
+        }
+        Some(SchemaType::Object) => {
+            asserts.push(is_required_formatter(jsonpath, "isCollection", is_required));
+            let properties = &schema.properties;
+            for (name, prop) in properties.iter() {
+                let (inner, mut inner_diagnostics) =
+                    resolve_schema(spec, prop, diagnostic_context);
+                diagnostics.append(&mut inner_diagnostics);
+                if inner.is_none() {
+                    break;
+                }
+                let inner = inner.unwrap();
+
+                // There are characters that aren't allowed in jsonpath so we change the format
+                // if they're present.
+                let inner_jsonpath = if name.chars().any(|c| c == '@' || c == '$') {
+                    format!("{}['{}']", jsonpath, name)
+                } else {
+                    format!("{}.{}", jsonpath, name)
+                };
+                let child_is_required = is_required && schema.required.contains(name);
+                let (mut child_asserts, mut child_diagnostics) =
+                    generate_assert_from_schema(
+                        spec,
+                        inner,
+                        inner_jsonpath.as_ref(),
+                        child_is_required,
+                        diagnostic_context,
+                    );
+                asserts.append(&mut child_asserts);
+                diagnostics.append(&mut child_diagnostics);
+            }
+        }
+        _ => {
+            diagnostics.push(HeaveError::UnsupportedSchemaKind {
+                context: diagnostic_context.clone(),
+                kind: "Any".to_string(),
+                jsonpath: jsonpath.to_string(),
+            });
         }
     }
     (asserts, diagnostics)
 }
 
-fn resolve_schema<'a>(
-    openapi: &'a openapiv3::OpenAPI,
-    schema: &'a openapiv3::ReferenceOr<openapiv3::Schema>,
+/// Extract the primary (non-null) type from a SchemaTypeSet.
+fn get_primary_type(type_set: &SchemaTypeSet) -> Option<SchemaType> {
+    match type_set {
+        SchemaTypeSet::Single(t) => Some(*t),
+        SchemaTypeSet::Multiple(types) => {
+            types.iter().find(|t| **t != SchemaType::Null).copied()
+        }
+    }
+}
+
+fn get_non_null_types(type_set: &SchemaTypeSet) -> Vec<SchemaType> {
+    match type_set {
+        SchemaTypeSet::Single(t) => vec![*t],
+        SchemaTypeSet::Multiple(types) => {
+            types.iter().filter(|t| **t != SchemaType::Null).copied().collect()
+        }
+    }
+}
+
+fn schema_type_to_hurl_predicate(t: SchemaType) -> Option<&'static str> {
+    match t {
+        SchemaType::Boolean => Some("isBoolean"),
+        SchemaType::String => Some("isString"),
+        SchemaType::Number => Some("isNumber"),
+        SchemaType::Integer => Some("isInteger"),
+        SchemaType::Array | SchemaType::Object => Some("isCollection"),
+        _ => None,
+    }
+}
+
+/// Resolve a Schema enum (which may be Boolean or Object) into an ObjectSchema reference.
+/// When the schema contains a `$ref`, resolves it against the spec's components.
+fn resolve_schema_from_schema<'a>(
+    spec: &'a Spec,
+    schema: &'a oas3::spec::Schema,
     diagnostic_context: &DiagnosticContext,
-) -> (Option<&'a openapiv3::Schema>, Vec<HeaveError>) {
+) -> (Option<&'a ObjectSchema>, Vec<HeaveError>) {
+    match schema {
+        oas3::spec::Schema::Boolean(_) => (None, vec![]),
+        oas3::spec::Schema::Object(obj_or_ref) => {
+            resolve_schema(spec, obj_or_ref, diagnostic_context)
+        }
+    }
+}
+
+fn resolve_schema<'a>(
+    spec: &'a Spec,
+    schema: &'a ObjectOrReference<ObjectSchema>,
+    diagnostic_context: &DiagnosticContext,
+) -> (Option<&'a ObjectSchema>, Vec<HeaveError>) {
     let mut diagnostics: Vec<HeaveError> = vec![];
     match schema {
-        ReferenceOr::Item(item) => (Some(item), diagnostics),
-        ReferenceOr::Reference { reference } => {
-            let schema_name = reference.split("#/components/schemas/").nth(1);
+        ObjectOrReference::Object(item) => (Some(item), diagnostics),
+        ObjectOrReference::Ref { ref_path, .. } => {
+            let schema_name = ref_path.split("#/components/schemas/").nth(1);
             if schema_name.is_none() {
                 diagnostics.push(HeaveError::MalformedSchemaReference {
                     context: diagnostic_context.clone(),
-                    reference: reference.to_string(),
+                    reference: ref_path.to_string(),
                 });
                 return (None, diagnostics);
             }
             let schema_name = schema_name.unwrap();
-            let components = &openapi.components;
+            let components = &spec.components;
             if components.is_none() {
                 diagnostics.push(HeaveError::MissingComponents);
                 return (None, diagnostics);
@@ -1057,43 +1155,44 @@ fn resolve_schema<'a>(
             if found_schema.is_none() {
                 diagnostics.push(HeaveError::MissingSchemaReference {
                     context: diagnostic_context.clone(),
-                    reference: reference.to_string(),
+                    reference: ref_path.to_string(),
                 });
                 return (None, diagnostics);
             }
             let found_schema = found_schema.unwrap();
-            if found_schema.as_item().is_none() {
-                diagnostics.push(HeaveError::FailedSchemaDereference {
-                    context: diagnostic_context.clone(),
-                    reference: reference.to_string(),
-                });
-                return (None, diagnostics);
+            match found_schema {
+                ObjectOrReference::Object(schema) => (Some(schema), diagnostics),
+                ObjectOrReference::Ref { .. } => {
+                    diagnostics.push(HeaveError::FailedSchemaDereference {
+                        context: diagnostic_context.clone(),
+                        reference: ref_path.to_string(),
+                    });
+                    (None, diagnostics)
+                }
             }
-            let schema = found_schema.as_item().unwrap();
-            (Some(schema), diagnostics)
         }
     }
 }
 
 fn resolve_request_body<'a>(
-    openapi: &'a openapiv3::OpenAPI,
-    request_body: &'a openapiv3::ReferenceOr<openapiv3::RequestBody>,
+    spec: &'a Spec,
+    request_body: &'a ObjectOrReference<RequestBody>,
     diagnostic_context: &DiagnosticContext,
-) -> (Option<&'a openapiv3::RequestBody>, Vec<HeaveError>) {
+) -> (Option<&'a RequestBody>, Vec<HeaveError>) {
     let mut diagnostics: Vec<HeaveError> = vec![];
     match request_body {
-        ReferenceOr::Item(item) => (Some(item), diagnostics),
-        ReferenceOr::Reference { reference } => {
-            let request_body_name = reference.split("#/components/requestBodies/").nth(1);
+        ObjectOrReference::Object(item) => (Some(item), diagnostics),
+        ObjectOrReference::Ref { ref_path, .. } => {
+            let request_body_name = ref_path.split("#/components/requestBodies/").nth(1);
             if request_body_name.is_none() {
                 diagnostics.push(HeaveError::MalformedRequestBodyReference {
                     context: diagnostic_context.clone(),
-                    reference: reference.to_string(),
+                    reference: ref_path.to_string(),
                 });
                 return (None, diagnostics);
             }
             let request_body_name = request_body_name.unwrap();
-            let components = &openapi.components;
+            let components = &spec.components;
             if components.is_none() {
                 diagnostics.push(HeaveError::MissingComponents);
                 return (None, diagnostics);
@@ -1106,33 +1205,34 @@ fn resolve_request_body<'a>(
             if found_request_body.is_none() {
                 diagnostics.push(HeaveError::MissingRequestBodyReference {
                     context: diagnostic_context.clone(),
-                    reference: reference.to_string(),
+                    reference: ref_path.to_string(),
                 });
                 return (None, diagnostics);
             }
             let found_request_body = found_request_body.unwrap();
-            if found_request_body.as_item().is_none() {
-                diagnostics.push(HeaveError::FailedRequestBodyDereference {
-                    context: diagnostic_context.clone(),
-                    reference: reference.to_string(),
-                });
-                return (None, diagnostics);
+            match found_request_body {
+                ObjectOrReference::Object(rb) => (Some(rb), diagnostics),
+                ObjectOrReference::Ref { .. } => {
+                    diagnostics.push(HeaveError::FailedRequestBodyDereference {
+                        context: diagnostic_context.clone(),
+                        reference: ref_path.to_string(),
+                    });
+                    (None, diagnostics)
+                }
             }
-            let request_body = found_request_body.as_item().unwrap();
-            (Some(request_body), diagnostics)
         }
     }
 }
 
 fn generate_request_body_from_schema(
-    openapi: &openapiv3::OpenAPI,
-    schema: &openapiv3::Schema,
+    spec: &Spec,
+    schema: &ObjectSchema,
     name: Option<String>,
     diagnostic_context: &DiagnosticContext,
     jsonpath: &str,
 ) -> (Option<String>, Vec<HeaveError>) {
     // We don't need to include this in the request body if it's read only
-    if schema.schema_data.read_only {
+    if schema.read_only.unwrap_or(false) {
         return (None, vec![]);
     }
     // Cycle Detection
@@ -1168,161 +1268,178 @@ fn generate_request_body_from_schema(
     }
 
     let mut diagnostics = vec![];
-    match &schema.schema_kind {
-        openapiv3::SchemaKind::OneOf { .. } => {
-            diagnostics.push(HeaveError::UnsupportedSchemaKind {
-                context: diagnostic_context.clone(),
-                kind: "OneOf".to_string(),
-                jsonpath: name.unwrap_or("".to_string()),
-            })
-        }
-        openapiv3::SchemaKind::AllOf { all_of } => {
-            let mut child_request_bodies = vec![];
-            let mut flattened_object_fields = serde_json::Value::Object(serde_json::Map::new());
-            for all_of_schema_or_ref in all_of {
-                let (all_of_schema, mut inner_diagnostics) =
-                    resolve_schema(openapi, all_of_schema_or_ref, diagnostic_context);
-                diagnostics.append(&mut inner_diagnostics);
-                if let Some(s) = all_of_schema {
-                    let (request_body, mut inner_diagnostics) = generate_request_body_from_schema(
-                        openapi,
-                        s,
-                        None,
-                        diagnostic_context,
-                        jsonpath,
-                    );
-                    diagnostics.append(&mut inner_diagnostics);
 
-                    if let Some(body) = &request_body {
-                        // In the case of `allOf`, objects need special handling. We create an
-                        // empty JSON value and then flatten all the fields on to that single
-                        // value. Any primitive fields can just be added directly to
-                        // `child_request_bodies`.
-                        let mut j = serde_json::from_str::<serde_json::Value>(body).unwrap();
-                        if j.is_object() {
-                            let inner_map = flattened_object_fields.as_object_mut().unwrap();
-                            inner_map.append(j.as_object_mut().unwrap());
-                        } else {
-                            child_request_bodies.push(request_body);
-                        }
+    // Check composition keywords first
+    let composition_count = [
+        !schema.one_of.is_empty(),
+        !schema.all_of.is_empty(),
+        !schema.any_of.is_empty(),
+    ]
+    .iter()
+    .filter(|&&x| x)
+    .count();
+    if composition_count > 1 {
+        diagnostics.push(HeaveError::UnsupportedSchemaKind {
+            context: diagnostic_context.clone(),
+            kind: "Any".to_string(),
+            jsonpath: name.unwrap_or("".to_string()),
+        });
+        return (None, diagnostics);
+    }
+    if !schema.one_of.is_empty() {
+        diagnostics.push(HeaveError::UnsupportedSchemaKind {
+            context: diagnostic_context.clone(),
+            kind: "OneOf".to_string(),
+            jsonpath: name.unwrap_or("".to_string()),
+        });
+        return (None, diagnostics);
+    }
+    if !schema.all_of.is_empty() {
+        let mut child_request_bodies = vec![];
+        let mut flattened_object_fields = serde_json::Value::Object(serde_json::Map::new());
+        for all_of_schema_or_ref in &schema.all_of {
+            let (all_of_schema, mut inner_diagnostics) =
+                resolve_schema(spec, all_of_schema_or_ref, diagnostic_context);
+            diagnostics.append(&mut inner_diagnostics);
+            if let Some(s) = all_of_schema {
+                let (request_body, mut inner_diagnostics) = generate_request_body_from_schema(
+                    spec,
+                    s,
+                    None,
+                    diagnostic_context,
+                    jsonpath,
+                );
+                diagnostics.append(&mut inner_diagnostics);
+
+                if let Some(body) = &request_body {
+                    // In the case of `allOf`, objects need special handling. We create an
+                    // empty JSON value and then flatten all the fields on to that single
+                    // value. Any primitive fields can just be added directly to
+                    // `child_request_bodies`.
+                    let mut j = serde_json::from_str::<serde_json::Value>(body).unwrap();
+                    if j.is_object() {
+                        let inner_map = flattened_object_fields.as_object_mut().unwrap();
+                        inner_map.append(j.as_object_mut().unwrap());
+                    } else {
+                        child_request_bodies.push(request_body);
                     }
                 }
             }
-            // Only include `flattened_object_fields` if we actually added anything to it.
-            if !flattened_object_fields.as_object().unwrap().is_empty() {
-                child_request_bodies.push(Some(flattened_object_fields.to_string()));
-            }
+        }
+        // Only include `flattened_object_fields` if we actually added anything to it.
+        if !flattened_object_fields.as_object().unwrap().is_empty() {
+            child_request_bodies.push(Some(flattened_object_fields.to_string()));
+        }
 
-            // If child_request_bodies is empty we need to communicate that we couldn't build
-            // anything.
-            if child_request_bodies.is_empty() {
-                return (None, diagnostics);
-            }
+        // If child_request_bodies is empty we need to communicate that we couldn't build
+        // anything.
+        if child_request_bodies.is_empty() {
+            return (None, diagnostics);
+        }
 
+        let stringified_body = child_request_bodies
+            .into_iter()
+            .flatten()
+            .collect::<Vec<String>>()
+            .join(",\n");
+
+        return match name {
+            Some(name) => (
+                Some(format!("\"{}\": {}", name, stringified_body)),
+                diagnostics,
+            ),
+            None => (Some(stringified_body), diagnostics),
+        };
+    }
+    if !schema.any_of.is_empty() {
+        diagnostics.push(HeaveError::UnsupportedSchemaKind {
+            context: diagnostic_context.clone(),
+            kind: "AnyOf".to_string(),
+            jsonpath: name.unwrap_or("".to_string()),
+        });
+        return (None, diagnostics);
+    }
+
+    // A small helper that takes properties that may or may not have names and formats them
+    // accordingly.
+    let single_property_formatter = |name: Option<String>, default: &str| -> String {
+        match name {
+            Some(name) => format!("\"{}\": {}", name, default),
+            None => default.to_string(),
+        }
+    };
+
+    // Determine the primary type from schema_type
+    let primary_type = match &schema.schema_type {
+        Some(type_set) => get_primary_type(type_set),
+        None => {
+            diagnostics.push(HeaveError::UnsupportedSchemaKind {
+                context: diagnostic_context.clone(),
+                kind: "Any".to_string(),
+                jsonpath: name.unwrap_or("".to_string()),
+            });
+            return (None, diagnostics);
+        }
+    };
+
+    match primary_type {
+        Some(SchemaType::Boolean) => {
+            return (Some(single_property_formatter(name, "false")), diagnostics);
+        }
+        Some(SchemaType::String) => {
+            return (Some(single_property_formatter(name, "\"\"")), diagnostics);
+        }
+        Some(SchemaType::Number) | Some(SchemaType::Integer) => {
+            return (Some(single_property_formatter(name, "0")), diagnostics);
+        }
+        Some(SchemaType::Object) => {
+            let properties = &schema.properties;
+            let mut child_request_bodies: Vec<Option<String>> = vec![];
+            for (prop_name, prop) in properties.iter() {
+                let (inner, mut inner_diagnostics) =
+                    resolve_schema(spec, prop, diagnostic_context);
+                diagnostics.append(&mut inner_diagnostics);
+                if inner.is_none() {
+                    return (None, diagnostics);
+                }
+                let inner = inner.unwrap();
+                let (request_body, mut inner_diagnostics) =
+                    generate_request_body_from_schema(
+                        spec,
+                        inner,
+                        Some(prop_name.to_string()),
+                        diagnostic_context,
+                        format!("{}.{}", jsonpath, prop_name).as_ref(),
+                    );
+                child_request_bodies.push(request_body);
+                diagnostics.append(&mut inner_diagnostics);
+            }
             let stringified_body = child_request_bodies
                 .into_iter()
                 .flatten()
                 .collect::<Vec<String>>()
                 .join(",\n");
-
             return match name {
                 Some(name) => (
-                    Some(format!("\"{}\": {}", name, stringified_body)),
+                    Some(format!("\"{}\": {{{}}}", name, stringified_body)),
                     diagnostics,
                 ),
-                None => (Some(stringified_body), diagnostics),
+                None => (Some(format!("{{\n{}\n}}", stringified_body,)), diagnostics),
             };
         }
-        openapiv3::SchemaKind::AnyOf { .. } => {
-            diagnostics.push(HeaveError::UnsupportedSchemaKind {
-                context: diagnostic_context.clone(),
-                kind: "AnyOf".to_string(),
-                jsonpath: name.unwrap_or("".to_string()),
-            })
-        }
-        openapiv3::SchemaKind::Not { .. } => diagnostics.push(HeaveError::UnsupportedSchemaKind {
-            context: diagnostic_context.clone(),
-            kind: "Not".to_string(),
-            jsonpath: name.unwrap_or("".to_string()),
-        }),
-        openapiv3::SchemaKind::Any(_) => diagnostics.push(HeaveError::UnsupportedSchemaKind {
-            context: diagnostic_context.clone(),
-            kind: "Any".to_string(),
-            jsonpath: name.unwrap_or("".to_string()),
-        }),
-        openapiv3::SchemaKind::Type(schema_type) => {
-            // A small helper that takes properties that may or may not have names and formats them
-            // accordingly. If they have a name, start by indenting them, print the named property,
-            // then give it a default value. If there is no name, just print the default value.
-            let single_property_formatter = |name: Option<String>, default: &str| -> String {
-                match name {
-                    Some(name) => format!("\"{}\": {}", name, default),
-                    None => default.to_string(),
-                }
-            };
-            return match schema_type {
-                openapiv3::Type::Boolean(_) => {
-                    (Some(single_property_formatter(name, "false")), diagnostics)
-                }
-                openapiv3::Type::String(_) => {
-                    (Some(single_property_formatter(name, "\"\"")), diagnostics)
-                }
-                openapiv3::Type::Number(_) | openapiv3::Type::Integer(_) => {
-                    (Some(single_property_formatter(name, "0")), diagnostics)
-                }
-                openapiv3::Type::Object(ob) => {
-                    let properties = &ob.properties;
-                    let mut child_request_bodies: Vec<Option<String>> = vec![];
-                    for (name, prop) in properties.iter() {
-                        let unboxed = prop.clone().unbox();
-                        let (inner, mut inner_diagnostics) =
-                            resolve_schema(openapi, &unboxed, diagnostic_context);
-                        diagnostics.append(&mut inner_diagnostics);
-                        if inner.is_none() {
-                            return (None, diagnostics);
-                        }
-                        let inner = inner.unwrap();
-                        let (request_body, mut inner_diagnostics) =
-                            generate_request_body_from_schema(
-                                openapi,
-                                inner,
-                                Some(name.to_string()),
-                                diagnostic_context,
-                                format!("{}.{}", jsonpath, name).as_ref(),
-                            );
-                        child_request_bodies.push(request_body);
-                        diagnostics.append(&mut inner_diagnostics);
-                    }
-                    let stringified_body = child_request_bodies
-                        .into_iter()
-                        .flatten()
-                        .collect::<Vec<String>>()
-                        .join(",\n");
-                    return match name {
-                        Some(name) => (
-                            Some(format!("\"{}\": {{{}}}", name, stringified_body)),
-                            diagnostics,
-                        ),
-                        None => (Some(format!("{{\n{}\n}}", stringified_body,)), diagnostics),
-                    };
-                }
-                openapiv3::Type::Array(array) => {
-                    let items = &array.items;
-                    if items.is_none() {
-                        return (None, diagnostics);
-                    }
-                    let items = items.as_ref().unwrap();
-                    let unboxed = items.clone().unbox();
-                    let (inner, mut inner_diagnostics) =
-                        resolve_schema(openapi, &unboxed, diagnostic_context);
+        Some(SchemaType::Array) => {
+            let items = &schema.items;
+            if items.is_none() {
+                return (None, diagnostics);
+            }
+            let items = items.as_ref().unwrap();
+            let inner = resolve_schema_from_schema(spec, items, diagnostic_context);
+            match inner {
+                (Some(inner), mut inner_diagnostics) => {
                     diagnostics.append(&mut inner_diagnostics);
-                    if inner.is_none() {
-                        return (None, diagnostics);
-                    }
-                    let inner = inner.unwrap();
                     let (child_request_body, mut child_diagnostics) =
                         generate_request_body_from_schema(
-                            openapi,
+                            spec,
                             inner,
                             None,
                             diagnostic_context,
@@ -1341,31 +1458,42 @@ fn generate_request_body_from_schema(
                         None => (Some(format!("[{}]", child_request_body)), diagnostics),
                     }
                 }
-            };
+                (None, mut inner_diagnostics) => {
+                    diagnostics.append(&mut inner_diagnostics);
+                    (None, diagnostics)
+                }
+            }
+        }
+        _ => {
+            diagnostics.push(HeaveError::UnsupportedSchemaKind {
+                context: diagnostic_context.clone(),
+                kind: "Any".to_string(),
+                jsonpath: name.unwrap_or("".to_string()),
+            });
+            (None, diagnostics)
         }
     }
-    (None, diagnostics)
 }
 
 fn resolve_response<'a>(
-    openapi: &'a openapiv3::OpenAPI,
-    response: &'a openapiv3::ReferenceOr<openapiv3::Response>,
+    spec: &'a Spec,
+    response: &'a ObjectOrReference<Response>,
     diagnostic_context: &DiagnosticContext,
-) -> (Option<&'a openapiv3::Response>, Vec<HeaveError>) {
+) -> (Option<&'a Response>, Vec<HeaveError>) {
     let mut diagnostics = vec![];
     match response {
-        ReferenceOr::Item(item) => (Some(item), diagnostics),
-        ReferenceOr::Reference { reference } => {
-            let response_name = reference.split("#/components/responses/").nth(1);
+        ObjectOrReference::Object(item) => (Some(item), diagnostics),
+        ObjectOrReference::Ref { ref_path, .. } => {
+            let response_name = ref_path.split("#/components/responses/").nth(1);
             if response_name.is_none() {
                 diagnostics.push(HeaveError::MalformedResponseBodyReference {
                     context: diagnostic_context.clone(),
-                    reference: reference.to_string(),
+                    reference: ref_path.to_string(),
                 });
                 return (None, diagnostics);
             }
             let response_name = response_name.unwrap();
-            let components = &openapi.components;
+            let components = &spec.components;
             if components.is_none() {
                 diagnostics.push(HeaveError::MissingComponents);
                 return (None, diagnostics);
@@ -1374,20 +1502,21 @@ fn resolve_response<'a>(
             if found_response.is_none() {
                 diagnostics.push(HeaveError::MissingResponseBodyReference {
                     context: diagnostic_context.clone(),
-                    reference: reference.to_string(),
+                    reference: ref_path.to_string(),
                 });
                 return (None, diagnostics);
             }
             let found_response = found_response.unwrap();
-            if found_response.as_item().is_none() {
-                diagnostics.push(HeaveError::FailedResponseBodyDereference {
-                    context: diagnostic_context.clone(),
-                    reference: reference.to_string(),
-                });
-                return (None, diagnostics);
+            match found_response {
+                ObjectOrReference::Object(resp) => (Some(resp), diagnostics),
+                ObjectOrReference::Ref { .. } => {
+                    diagnostics.push(HeaveError::FailedResponseBodyDereference {
+                        context: diagnostic_context.clone(),
+                        reference: ref_path.to_string(),
+                    });
+                    (None, diagnostics)
+                }
             }
-            let schema = found_response.as_item().unwrap();
-            (Some(schema), diagnostics)
         }
     }
 }
@@ -1397,14 +1526,14 @@ mod tests {
     use std::{error::Error, path::PathBuf, str::FromStr};
 
     use insta::{assert_debug_snapshot, assert_snapshot, glob};
-    use openapiv3::OpenAPI;
+    use oas3::spec::Spec;
 
     use crate::{generate, write_outputs, Output, DEFAULT_HURL_TEMPLATE};
 
-    // Creates an OpenAPI from a file path
-    macro_rules! openapi_from_yaml {
+    // Creates a Spec from a file path
+    macro_rules! spec_from_yaml {
         ($fname:expr) => {
-            serde_yaml::from_str(&std::fs::read_to_string($fname).unwrap()).unwrap()
+            oas3::from_yaml(&std::fs::read_to_string($fname).unwrap()).unwrap()
         };
     }
 
@@ -1412,9 +1541,9 @@ mod tests {
     fn petstore() -> Result<(), Box<dyn Error>> {
         // Testing json and yaml in this same test so I make sure the output snapshots are the same
         let content = std::fs::read_to_string("src/snapshots/petstore/petstore.yaml")?;
-        let openapi: OpenAPI = serde_yaml::from_str(&content).expect("Could not deserialize input");
+        let spec: Spec = oas3::from_yaml(&content).expect("Could not deserialize input");
         let output_directory = PathBuf::from_str("src/snapshots/petstore")?;
-        let result = generate(openapi);
+        let result = generate(spec);
         write_outputs(&result.outputs, DEFAULT_HURL_TEMPLATE, &output_directory)?;
         let mut settings = insta::Settings::clone_current();
         settings.set_omit_expression(true);
@@ -1428,9 +1557,9 @@ mod tests {
         });
 
         let content = std::fs::read_to_string("src/snapshots/petstore/petstore.json")?;
-        let openapi: OpenAPI = serde_json::from_str(&content).expect("Could not deserialize input");
+        let spec: Spec = oas3::from_json(&content).expect("Could not deserialize input");
         let output_directory = PathBuf::from_str("src/snapshots/petstore")?;
-        let result = generate(openapi);
+        let result = generate(spec);
         write_outputs(&result.outputs, DEFAULT_HURL_TEMPLATE, &output_directory)?;
         let mut settings = insta::Settings::clone_current();
         settings.set_omit_expression(true);
@@ -1452,7 +1581,7 @@ mod tests {
         settings.set_omit_expression(true);
         settings.bind(|| {
             glob!("snapshots/diagnostics/*.yaml", |path| {
-                let input: OpenAPI = openapi_from_yaml!(&path);
+                let input: Spec = spec_from_yaml!(&path);
                 let result = generate(input);
                 assert_debug_snapshot!(result);
             });
@@ -1466,7 +1595,7 @@ mod tests {
         settings.set_omit_expression(true);
         settings.bind(|| {
             glob!("snapshots/cycle_detection/*.yaml", |path| {
-                let input: OpenAPI = openapi_from_yaml!(&path);
+                let input: Spec = spec_from_yaml!(&path);
                 let result = generate(input);
                 assert_debug_snapshot!(result);
             });
@@ -1480,7 +1609,7 @@ mod tests {
         settings.set_omit_expression(true);
         settings.bind(|| {
             glob!("snapshots/read_only/*.yaml", |path| {
-                let input: OpenAPI = openapi_from_yaml!(&path);
+                let input: Spec = spec_from_yaml!(&path);
                 let result = generate(input);
                 assert_debug_snapshot!(result);
             });
@@ -1494,7 +1623,7 @@ mod tests {
         settings.set_omit_expression(true);
         settings.bind(|| {
             glob!("snapshots/write_only/*.yaml", |path| {
-                let input: OpenAPI = openapi_from_yaml!(&path);
+                let input: Spec = spec_from_yaml!(&path);
                 let result = generate(input);
                 assert_debug_snapshot!(result);
             });
@@ -1504,9 +1633,9 @@ mod tests {
 
     #[test]
     fn allof_inputs() -> Result<(), Box<dyn Error>> {
-        let openapi: OpenAPI = openapi_from_yaml!("src/snapshots/allof/petstore.yaml");
+        let spec: Spec = spec_from_yaml!("src/snapshots/allof/petstore.yaml");
         let output_directory = PathBuf::from_str("src/snapshots/allof")?;
-        let result = generate(openapi);
+        let result = generate(spec);
         write_outputs(&result.outputs, DEFAULT_HURL_TEMPLATE, &output_directory)?;
         let mut settings = insta::Settings::clone_current();
         settings.set_omit_expression(true);
@@ -1514,6 +1643,37 @@ mod tests {
             glob!("snapshots/allof/*.hurl", |path| {
                 let input = std::fs::read_to_string(path).unwrap();
                 assert_snapshot!(input);
+            });
+        });
+        Ok(())
+    }
+
+    #[test]
+    fn oas31_petstore() -> Result<(), Box<dyn Error>> {
+        let spec: Spec = spec_from_yaml!("src/snapshots/oas31/petstore.yaml");
+        let output_directory = PathBuf::from_str("src/snapshots/oas31")?;
+        let result = generate(spec);
+        write_outputs(&result.outputs, DEFAULT_HURL_TEMPLATE, &output_directory)?;
+        let mut settings = insta::Settings::clone_current();
+        settings.set_omit_expression(true);
+        settings.bind(|| {
+            glob!("snapshots/oas31/*.hurl", |path| {
+                let input = std::fs::read_to_string(path).unwrap();
+                assert_snapshot!(input);
+            });
+        });
+        Ok(())
+    }
+
+    #[test]
+    fn oas31_diagnostic_inputs() -> Result<(), Box<dyn Error>> {
+        let mut settings = insta::Settings::clone_current();
+        settings.set_omit_expression(true);
+        settings.bind(|| {
+            glob!("snapshots/oas31_diagnostics/*.yaml", |path| {
+                let input: Spec = spec_from_yaml!(&path);
+                let result = generate(input);
+                assert_debug_snapshot!(result);
             });
         });
         Ok(())

@@ -1,0 +1,25 @@
+---
+source: src/main.rs
+input_file: src/snapshots/oas31_diagnostics/MultipleTypes_RequestBody.yaml
+---
+GenerateResult {
+    outputs: [
+        Output {
+            expected_status_code: 201,
+            name: "createItem_201.hurl",
+            hurl_path: "/items",
+            oas_path: "/items",
+            oas_operation_id: Some(
+                "createItem",
+            ),
+            method: "POST",
+            header_parameters: [],
+            query_parameters: [],
+            asserts: [
+                "jsonpath \"$\" isCollection",
+            ],
+            request_body_parameter: "{\n  \"label\": \"\",\n  \"value\": 0\n}",
+        },
+    ],
+    diagnostics: [],
+}

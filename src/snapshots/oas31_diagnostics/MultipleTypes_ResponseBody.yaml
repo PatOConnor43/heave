@@ -1,0 +1,29 @@
+openapi: 3.1.0
+info:
+  version: 1.0.0
+  title: Multi-type Test
+paths:
+  /items:
+    get:
+      operationId: getItem
+      responses:
+        '200':
+          description: An item
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - id
+                  - value
+                properties:
+                  id:
+                    type: integer
+                  value:
+                    type:
+                      - integer
+                      - string
+                  label:
+                    type:
+                      - string
+                      - "null"

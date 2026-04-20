@@ -27,7 +27,7 @@ GenerateResult {
                 operation: "addPet",
                 path: "/pets",
             },
-            kind: "Not",
+            kind: "Any",
             jsonpath: "",
         },
     ],
